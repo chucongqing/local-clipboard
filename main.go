@@ -101,6 +101,16 @@ func (fs *FileStore) get(id string) (*FileData, bool) {
 	return file, ok
 }
 
+func (fs *FileStore) all() []*FileData {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	out := make([]*FileData, 0, len(fs.files))
+	for _, file := range fs.files {
+		out = append(out, file)
+	}
+	return out
+}
+
 func (fs *FileStore) clear() {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -743,6 +753,7 @@ func (room *Room) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fileData := &FileData{
+		ID:   fileID,
 		Name: header.Filename,
 		Size: written,
 		Type: header.Header.Get("Content-Type"),
@@ -799,6 +810,69 @@ func (room *Room) handleFileDownload(w http.ResponseWriter, r *http.Request, fil
 	// Stream the file from disk; supports range requests and keeps memory usage low.
 	http.ServeContent(w, r, fileMeta.Name, fi.ModTime(), f)
 	log.Printf("Room %s: successfully served file %s (%s, %d bytes)", room.id, fileID, fileMeta.Name, fileMeta.Size)
+}
+
+type fileWithURL struct {
+	*FileData
+	URL        string `json:"url"`
+	SenderIP   string `json:"senderIp,omitempty"`
+	SenderName string `json:"senderName,omitempty"`
+}
+
+type messagesResponse struct {
+	Room     string        `json:"room"`
+	Messages []Message     `json:"messages"`
+	Files    []fileWithURL `json:"files"`
+}
+
+func (room *Room) handleMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	roomPath := "/r/" + room.id
+	if room.id == "" || room.id == "default" {
+		roomPath = ""
+	}
+	baseURL := fmt.Sprintf("%s://%s%s", scheme, r.Host, roomPath)
+
+	messages := room.messageStore.all()
+
+	// Build a lookup from file ID -> sender info using the room history.
+	senderByFileID := make(map[string]Message)
+	for _, msg := range messages {
+		if msg.File != nil && msg.File.ID != "" {
+			senderByFileID[msg.File.ID] = msg
+		}
+	}
+
+	fileMetas := room.fileStore.all()
+	files := make([]fileWithURL, 0, len(fileMetas))
+	for _, meta := range fileMetas {
+		fw := fileWithURL{
+			FileData: meta,
+			URL:      fmt.Sprintf("%s/file/%s?download=1", baseURL, meta.ID),
+		}
+		if msg, ok := senderByFileID[meta.ID]; ok {
+			fw.SenderIP = msg.SenderIP
+			fw.SenderName = msg.SenderName
+		}
+		files = append(files, fw)
+	}
+
+	resp := messagesResponse{
+		Room:     roomPath,
+		Messages: messages,
+		Files:    files,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (room *Room) handleClear(w http.ResponseWriter, r *http.Request) {
@@ -947,6 +1021,8 @@ func serveRoomAPI(room *Room, port string, w http.ResponseWriter, r *http.Reques
 		room.handleUpload(w, r)
 	case subPath == "/api/version":
 		serveVersion(w, r)
+	case subPath == "/api/messages":
+		room.handleMessages(w, r)
 	case subPath == "/qr":
 		roomPath := "/r/" + room.id
 		if room.id == "" || room.id == "default" {
@@ -985,6 +1061,9 @@ func route(rm *RoomManager, defaultRoom *Room, port string) http.HandlerFunc {
 		case "/api/version":
 			serveVersion(w, r)
 			return
+		case "/api/messages":
+			serveRoomAPI(defaultRoom, port, w, r, "/api/messages")
+			return
 		case "/new-room":
 			serveNewRoom(rm)(w, r)
 			return
@@ -996,7 +1075,7 @@ func route(rm *RoomManager, defaultRoom *Room, port string) http.HandlerFunc {
 		// Default room API
 		if path == "/ws" || path == "/upload" || path == "/clear" ||
 			path == "/set-interval" || path == "/toggle-pause" ||
-			path == "/api/version" || path == "/qr" || strings.HasPrefix(path, "/file/") {
+			path == "/api/version" || path == "/api/messages" || path == "/qr" || strings.HasPrefix(path, "/file/") {
 			serveRoomAPI(defaultRoom, port, w, r, path)
 			return
 		}

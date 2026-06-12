@@ -207,6 +207,12 @@ function addMessage(text, file, isOwn, messageId, senderIp, senderName) {
       downloadBtn.textContent = 'Download';
       downloadBtn.onclick = () => downloadFile(fileId, file.name);
       actionsDiv.appendChild(downloadBtn);
+
+      const copyUrlBtn = document.createElement('button');
+      copyUrlBtn.className = 'action-btn copy-url-btn';
+      copyUrlBtn.textContent = 'Copy URL';
+      copyUrlBtn.onclick = () => copyFileUrl(fileId, copyUrlBtn);
+      actionsDiv.appendChild(copyUrlBtn);
     }
 
     messageDiv.appendChild(actionsDiv);
@@ -323,6 +329,34 @@ function downloadFile(fileId, fileName) {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+}
+
+function getFileUrl(fileId) {
+  return `${window.location.origin}${apiBase}/file/${fileId}?download=1`;
+}
+
+function copyFileUrl(fileId, button) {
+  const url = getFileUrl(fileId);
+
+  function onSuccess() {
+    button.classList.add('copied');
+    button.textContent = 'Copied';
+    setTimeout(() => {
+      button.classList.remove('copied');
+      button.textContent = 'Copy URL';
+    }, 2000);
+  }
+
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard
+      .writeText(url)
+      .then(onSuccess)
+      .catch(() => {
+        fallbackCopy(url, onSuccess);
+      });
+  } else {
+    fallbackCopy(url, onSuccess);
+  }
 }
 
 function openImageLightbox(fileId, fileName) {

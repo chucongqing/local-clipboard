@@ -139,6 +139,7 @@ The backend lives entirely in `main.go`.
 | `/file/:id` | GET | Downloads a stored file from the default room |
 | `/qr` | GET | PNG QR code pointing to the server's root URL |
 | `/api/version` | GET | Plain-text version string |
+| `/api/messages` | GET | Returns all text messages and file download URLs in the default room as JSON |
 | `/new-room` | POST | Creates a new isolated room with a UUID path and returns `{ "roomUrl": "/r/{uuid}" }` |
 | `/clear` | POST | Clears default-room messages/files |
 | `/set-interval` | POST | Sets default-room auto-clear interval (`{ "interval": N }`) |
@@ -151,6 +152,20 @@ The backend lives entirely in `main.go`.
 | `/r/{roomID}/clear` | POST | Clears that room's messages/files |
 | `/r/{roomID}/set-interval` | POST | Sets that room's auto-clear interval |
 | `/r/{roomID}/toggle-pause` | POST | Pauses or resumes that room's auto-clear timer |
+| `/r/{roomID}/api/messages` | GET | Returns all text messages and file download URLs in that room as JSON |
+
+Example `curl` usage for a room:
+
+```bash
+# List everything in the default room
+curl -s http://localhost:8080/api/messages | jq .
+
+# List everything in a private room
+curl -s http://localhost:8080/r/{roomID}/api/messages | jq .
+
+# Download all files from a room
+curl -s http://localhost:8080/r/{roomID}/api/messages | jq -r '.files[].url' | xargs -n1 curl -LO
+```
 
 ### Message flow
 
