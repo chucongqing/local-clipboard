@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -46,14 +47,15 @@ type ClearConfig struct {
 }
 
 type Message struct {
-	ID       string       `json:"id,omitempty"`
-	Type     string       `json:"type,omitempty"`
-	Text     string       `json:"text,omitempty"`
-	SenderIP string       `json:"senderIp,omitempty"`
-	File     *FileData    `json:"file,omitempty"`
-	Config   *ClearConfig `json:"config,omitempty"`
-	Count    int          `json:"count,omitempty"`
-	Messages []Message    `json:"messages,omitempty"`
+	ID         string       `json:"id,omitempty"`
+	Type       string       `json:"type,omitempty"`
+	Text       string       `json:"text,omitempty"`
+	SenderIP   string       `json:"senderIp,omitempty"`
+	SenderName string       `json:"senderName,omitempty"`
+	File       *FileData    `json:"file,omitempty"`
+	Config     *ClearConfig `json:"config,omitempty"`
+	Count      int          `json:"count,omitempty"`
+	Messages   []Message    `json:"messages,omitempty"`
 }
 
 type broadcastMsg struct {
@@ -146,10 +148,16 @@ func (ms *MessageStore) clear() {
 type connInfo struct {
 	conn *websocket.Conn
 	ip   string
+	name string
+}
+
+type clientInfo struct {
+	ip   string
+	name string
 }
 
 type Hub struct {
-	clients       map[*websocket.Conn]string // conn -> remote IP
+	clients       map[*websocket.Conn]clientInfo // conn -> client info
 	broadcast     chan broadcastMsg
 	register      chan connInfo
 	unregister    chan *websocket.Conn
@@ -164,7 +172,7 @@ type Hub struct {
 
 func newHub(fileStore *FileStore, messageStore *MessageStore) *Hub {
 	return &Hub{
-		clients:       make(map[*websocket.Conn]string),
+		clients:       make(map[*websocket.Conn]clientInfo),
 		broadcast:     make(chan broadcastMsg),
 		register:      make(chan connInfo),
 		unregister:    make(chan *websocket.Conn),
@@ -179,10 +187,10 @@ func newHub(fileStore *FileStore, messageStore *MessageStore) *Hub {
 
 // uniqueDeviceCount returns the number of distinct IPs in the clients map.
 // Must be called with h.mu held.
-func uniqueDeviceCount(clients map[*websocket.Conn]string) int {
+func uniqueDeviceCount(clients map[*websocket.Conn]clientInfo) int {
 	seen := make(map[string]struct{})
-	for _, ip := range clients {
-		seen[ip] = struct{}{}
+	for _, ci := range clients {
+		seen[ci.ip] = struct{}{}
 	}
 	return len(seen)
 }
@@ -210,6 +218,16 @@ func (h *Hub) sendConfigToConn(conn *websocket.Conn) {
 	}
 	if err := conn.WriteJSON(msg); err != nil {
 		log.Printf("Error sending config to new client: %v", err)
+	}
+}
+
+func (h *Hub) sendWelcomeToConn(conn *websocket.Conn, name string) {
+	msg := Message{
+		Type:       "welcome",
+		SenderName: name,
+	}
+	if err := conn.WriteJSON(msg); err != nil {
+		log.Printf("Error sending welcome to new client: %v", err)
 	}
 }
 
@@ -246,43 +264,46 @@ func (h *Hub) run() {
 				select {
 				case conn := <-h.unregister:
 					h.mu.Lock()
-					ip := h.clients[conn]
-					if ip != "" {
+					info := h.clients[conn]
+					if info.ip != "" {
 						delete(h.clients, conn)
 						conn.Close()
 					}
 					h.mu.Unlock()
-					log.Printf("Client disconnected: %s", ip)
+					log.Printf("Client disconnected: %s@%s", info.name, info.ip)
 				default:
 					break drainLoop
 				}
 			}
 			h.mu.Lock()
-			h.clients[ci.conn] = ci.ip
+			h.clients[ci.conn] = clientInfo{ip: ci.ip, name: ci.name}
 			count := uniqueDeviceCount(h.clients)
 			h.mu.Unlock()
-			log.Printf("Client connected: %s. Total devices: %d", ci.ip, count)
+			log.Printf("Client connected: %s@%s. Total devices: %d", ci.name, ci.ip, count)
 			h.sendConfigToConn(ci.conn)
+			h.sendWelcomeToConn(ci.conn, ci.name)
 			h.sendHistoryToConn(ci.conn)
 			h.broadcastToAll(Message{Type: "clients", Count: count})
 
 		case conn := <-h.unregister:
 			h.mu.Lock()
-			ip := h.clients[conn]
-			if ip != "" {
+			info := h.clients[conn]
+			if info.ip != "" {
 				delete(h.clients, conn)
 				conn.Close()
 			}
 			count := uniqueDeviceCount(h.clients)
 			h.mu.Unlock()
-			log.Printf("Client disconnected: %s. Total devices: %d", ip, count)
+			log.Printf("Client disconnected: %s@%s. Total devices: %d", info.name, info.ip, count)
 			h.broadcastToAll(Message{Type: "clients", Count: count})
 
 		case bm := <-h.broadcast:
 			message := bm.msg
-			// Set sender IP
+			// Set sender IP and name
 			h.mu.Lock()
-			message.SenderIP = h.clients[bm.sender]
+			senderInfo := h.clients[bm.sender]
+			message.SenderIP = senderInfo.ip
+			message.SenderName = senderInfo.name
 			h.mu.Unlock()
 
 			// Validate and sanitize file metadata before broadcast.
@@ -395,7 +416,8 @@ func (h *Hub) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := realIP(r)
-	h.register <- connInfo{conn: conn, ip: ip}
+	name := generateChineseName()
+	h.register <- connInfo{conn: conn, ip: ip, name: name}
 
 	defer func() {
 		h.unregister <- conn
@@ -433,6 +455,41 @@ func realIP(r *http.Request) string {
 	}
 	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
 	return ip
+}
+
+// chineseNamePrefixes and chineseNameSuffixes provide a large pool of words
+// for Blizzard-style random names such as "愤怒之狼" or "沉默的猎手".
+var chineseNamePrefixes = []string{
+	"愤怒", "沉默", "狡猾", "勇敢", "孤独", "狂野", "神秘", "暗影", "光明", "寒冰",
+	"烈焰", "雷霆", "迅捷", "坚韧", "狂暴", "幽灵", "钢铁", "血腥", "神圣", "黑暗",
+	"贪婪", "傲慢", "嫉妒", "懒惰", "暴食", "色欲", "暴怒", "虚荣", "虚伪", "狂热",
+	"冷酷", "无情", "温柔", "慈祥", "威严", "高贵", "卑微", "渺小", "伟大", "永恒",
+	"破碎", "完整", "迷失", "觉醒", "沉睡", "苏醒", "凋零", "绽放", "腐朽", "新生",
+	"疾风", "骤雨", "惊雷", "闪电", "霜雪", "熔岩", "深渊", "苍穹", "星辰", "死亡",
+	"生命", "毁灭", "创造", "秩序", "混乱", "正义", "邪恶", "真理", "谎言", "寂寞",
+	"欢愉", "悲伤", "痛苦", "快乐", "恐惧", "希望", "绝望", "信念",
+}
+
+var chineseNameSuffixes = []string{
+	"野猪", "战狼", "猎手", "刺客", "骑士", "法师", "巨龙", "猛虎", "雄狮", "幽灵",
+	"幻影", "风暴", "之刃", "行者", "游侠", "守护者", "毁灭者", "追猎者", "先知", "领主",
+	"天使", "恶魔", "亡灵", "兽人", "精灵", "矮人", "侏儒", "巨人", "元素", "树人",
+	"武士", "忍者", "剑客", "枪手", "狙击手", "工程师", "炼金术士", "德鲁伊", "萨满", "牧师",
+	"凤凰", "朱雀", "青龙", "白虎", "玄武", "麒麟", "饕餮", "穷奇", "混沌", "梼杌",
+	"玫瑰", "荆棘", "蔷薇", "百合", "罂粟", "曼陀罗", "彼岸花", "樱花", "梅花", "莲花",
+	"雷霆", "烈焰", "冰霜", "暗影", "圣光", "自然", "奥术", "邪能", "鲜血", "死亡",
+	"皇帝", "国王", "女王", "王子", "公主", "伯爵", "公爵", "勋爵",
+}
+
+var chineseNameJoiners = []string{"的", "之"}
+
+// generateChineseName returns a random Blizzard-style Chinese name
+// in the form "prefix+joiner+suffix" (e.g. "愤怒之狼").
+func generateChineseName() string {
+	prefix := chineseNamePrefixes[rand.Intn(len(chineseNamePrefixes))]
+	suffix := chineseNameSuffixes[rand.Intn(len(chineseNameSuffixes))]
+	joiner := chineseNameJoiners[rand.Intn(len(chineseNameJoiners))]
+	return prefix + joiner + suffix
 }
 
 func getLocalIP() string {

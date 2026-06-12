@@ -17,6 +17,7 @@ let fileChipIdCounter = 0;
 let nextClearTime = null;
 let countdownInterval = null;
 let connectedCount = 0;
+let myName = '';
 
 function connect() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -54,6 +55,10 @@ function connect() {
       clearAllMessages();
       return;
     }
+    if (data.type === 'welcome') {
+      myName = data.senderName || '';
+      return;
+    }
     if (data.type === 'config') {
       applyConfig(data.config);
       return;
@@ -68,7 +73,7 @@ function connect() {
       if (Array.isArray(data.messages)) {
         for (const msg of data.messages) {
           const fileId = msg.file?.id || msg.id;
-          addMessage(msg.text || '', msg.file, false, fileId || msg.id, msg.senderIp || '');
+          addMessage(msg.text || '', msg.file, false, fileId || msg.id, msg.senderIp || '', msg.senderName || '');
         }
       }
       return;
@@ -78,7 +83,7 @@ function connect() {
       return;
     }
     const fileId = data.file?.id || data.id;
-    addMessage(data.text || '', data.file, false, fileId || data.id, data.senderIp || '');
+    addMessage(data.text || '', data.file, false, fileId || data.id, data.senderIp || '', data.senderName || '');
   };
 }
 
@@ -96,7 +101,7 @@ function escapeHTML(str) {
   return div.innerHTML;
 }
 
-function addMessage(text, file, isOwn, messageId, senderIp) {
+function addMessage(text, file, isOwn, messageId, senderIp, senderName) {
   const emptyState = messagesDiv.querySelector('.empty-state');
   if (emptyState) {
     emptyState.remove();
@@ -107,7 +112,15 @@ function addMessage(text, file, isOwn, messageId, senderIp) {
 
   const headerDiv = document.createElement('div');
   headerDiv.className = 'message-header';
-  headerDiv.textContent = isOwn ? 'You' : senderIp || 'Unknown';
+  if (senderName && senderIp) {
+    headerDiv.textContent = `${senderName}@${senderIp}`;
+  } else if (senderName) {
+    headerDiv.textContent = senderName;
+  } else if (isOwn) {
+    headerDiv.textContent = 'You';
+  } else {
+    headerDiv.textContent = senderIp || 'Unknown';
+  }
   messageDiv.appendChild(headerDiv);
 
   if (text) {
@@ -294,7 +307,7 @@ function sendOwnMessage(text, fileData) {
   };
   ownMessageIds.add(messageId);
   ws.send(JSON.stringify(message));
-  addMessage(text, fileData || null, true, messageId, '');
+  addMessage(text, fileData || null, true, messageId, '', myName);
 }
 
 async function sendMessage() {
