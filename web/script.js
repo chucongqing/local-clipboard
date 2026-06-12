@@ -9,6 +9,10 @@ const countdownDisplay = document.getElementById('countdownDisplay');
 const pauseResumeBtn = document.getElementById('pauseResumeBtn');
 const clearNowBtn = document.getElementById('clearNowBtn');
 const dropOverlay = document.getElementById('dropOverlay');
+const imageLightbox = document.getElementById('imageLightbox');
+const lightboxImage = document.getElementById('lightboxImage');
+const lightboxClose = document.getElementById('lightboxClose');
+const lightboxDownload = document.getElementById('lightboxDownload');
 
 let ws = null;
 const ownMessageIds = new Set();
@@ -95,6 +99,28 @@ function formatFileSize(bytes) {
   return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
 }
 
+function isImageFile(file) {
+  if (!file) return false;
+  const imageTypes = [
+    'image/png',
+    'image/jpeg',
+    'image/jpg',
+    'image/webp',
+    'image/gif',
+    'image/svg+xml',
+    'image/bmp',
+    'image/avif',
+    'image/tiff',
+    'image/x-icon'
+  ];
+  if (file.type && imageTypes.includes(file.type.toLowerCase())) {
+    return true;
+  }
+  const name = (file.name || '').toLowerCase();
+  const imageExts = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.bmp', '.avif', '.tiff', '.tif', '.ico'];
+  return imageExts.some(ext => name.endsWith(ext));
+}
+
 function escapeHTML(str) {
   const div = document.createElement('div');
   div.textContent = str;
@@ -132,16 +158,27 @@ function addMessage(text, file, isOwn, messageId, senderIp, senderName) {
   }
 
   if (file) {
-    const fileDiv = document.createElement('div');
-    fileDiv.className = 'message-file';
-    fileDiv.innerHTML = `
-      <span class="file-icon">📎</span>
-      <span class="file-info">
-        <span class="file-name-display">${escapeHTML(file.name)}</span>
-        <span class="file-size">${formatFileSize(file.size)}</span>
-      </span>
-    `;
-    messageDiv.appendChild(fileDiv);
+    const fileId = file.id || messageId;
+    if (isImageFile(file)) {
+      const img = document.createElement('img');
+      img.className = 'message-image';
+      img.src = `/file/${fileId}`;
+      img.alt = file.name;
+      img.loading = 'lazy';
+      img.onclick = () => openImageLightbox(fileId, file.name);
+      messageDiv.appendChild(img);
+    } else {
+      const fileDiv = document.createElement('div');
+      fileDiv.className = 'message-file';
+      fileDiv.innerHTML = `
+        <span class="file-icon">📎</span>
+        <span class="file-info">
+          <span class="file-name-display">${escapeHTML(file.name)}</span>
+          <span class="file-size">${formatFileSize(file.size)}</span>
+        </span>
+      `;
+      messageDiv.appendChild(fileDiv);
+    }
   }
 
   const hasActions = (text && (!isMobile() || window.isSecureContext)) || file;
@@ -273,13 +310,32 @@ function fallbackCopy(text, onSuccess) {
 }
 
 function downloadFile(fileId, fileName) {
-  const url = `/file/${fileId}`;
+  const url = `/file/${fileId}?download=1`;
   const link = document.createElement('a');
   link.href = url;
   link.download = fileName;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+}
+
+function openImageLightbox(fileId, fileName) {
+  if (!imageLightbox || !lightboxImage || !lightboxDownload) return;
+  lightboxImage.src = `/file/${fileId}`;
+  lightboxImage.alt = fileName || 'Preview';
+  lightboxDownload.href = `/file/${fileId}?download=1`;
+  lightboxDownload.download = fileName || '';
+  imageLightbox.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeImageLightbox() {
+  if (!imageLightbox) return;
+  imageLightbox.style.display = 'none';
+  if (lightboxImage) {
+    lightboxImage.src = '';
+  }
+  document.body.style.overflow = '';
 }
 
 async function uploadFile(file) {
@@ -645,6 +701,23 @@ pauseResumeBtn.addEventListener('click', () => {
 
 clearNowBtn.addEventListener('click', () => {
   fetch('/clear', { method: 'POST' }).catch(err => console.error('Failed to clear:', err));
+});
+
+// Image lightbox events
+if (lightboxClose) {
+  lightboxClose.addEventListener('click', closeImageLightbox);
+}
+if (imageLightbox) {
+  imageLightbox.addEventListener('click', e => {
+    if (e.target === imageLightbox || e.target === lightboxImage) {
+      closeImageLightbox();
+    }
+  });
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && imageLightbox && imageLightbox.style.display === 'flex') {
+    closeImageLightbox();
+  }
 });
 
 // Drag and drop file upload

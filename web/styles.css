@@ -1060,3 +1060,96 @@ h1 {
     flex: 1;
   }
 }
+
+/* Inline image preview in messages */
+.message-image {
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: 10px;
+  cursor: zoom-in;
+  display: block;
+  object-fit: cover;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.message-image:hover {
+  transform: scale(1.01);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+}
+
+.message.own .message-image {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* Image lightbox */
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.9);
+  backdrop-filter: blur(4px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  gap: 16px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.lightbox-image {
+  max-width: 90vw;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 10px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  background: rgba(255, 255, 255, 0.15);
+  border: none;
+  color: white;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  font-size: 1.8em;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: scale(1.05);
+}
+
+.lightbox-close:active {
+  transform: scale(0.95);
+}
+
+.lightbox-download {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  text-decoration: none;
+  padding: 10px 22px;
+  border-radius: 10px;
+  font-size: 0.95em;
+  font-weight: 600;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.lightbox-download:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 14px rgba(102, 126, 234, 0.4);
+}
+
+.lightbox-download:active {
+  transform: translateY(0);
+}

@@ -492,6 +492,29 @@ func generateChineseName() string {
 	return prefix + joiner + suffix
 }
 
+// isImageContentType reports whether a file should be displayed inline as an
+// image. It checks the MIME type first, then falls back to the file extension.
+func isImageContentType(contentType, fileName string) bool {
+	ct := strings.ToLower(contentType)
+	imageTypes := []string{
+		"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif",
+		"image/svg+xml", "image/bmp", "image/avif", "image/tiff", "image/x-icon",
+	}
+	for _, t := range imageTypes {
+		if ct == t || strings.HasPrefix(ct, t+";") {
+			return true
+		}
+	}
+
+	ext := strings.ToLower(filepath.Ext(fileName))
+	imageExts := map[string]bool{
+		".png": true, ".jpg": true, ".jpeg": true, ".webp": true,
+		".gif": true, ".svg": true, ".bmp": true, ".avif": true,
+		".tiff": true, ".tif": true, ".ico": true,
+	}
+	return imageExts[ext]
+}
+
 func getLocalIP() string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -754,7 +777,11 @@ func main() {
 			contentType = "application/octet-stream"
 		}
 
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileMeta.Name))
+		// Display images inline in the chat by default; force download when
+		// ?download=1 is provided or the file is not a recognized image.
+		if r.URL.Query().Get("download") == "1" || !isImageContentType(contentType, fileMeta.Name) {
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileMeta.Name))
+		}
 
 		// Stream the file from disk; supports range requests and keeps memory usage low.
 		http.ServeContent(w, r, fileMeta.Name, fi.ModTime(), f)
