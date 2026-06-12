@@ -13,7 +13,7 @@ A simple, elegant local network clipboard/chat application. Share text and files
 - 📎 File sharing and download support
 - 📱 Works on any device with a browser (desktop, mobile, tablet)
 - 🌐 No internet required - works on local network only
-- 💾 In-memory storage (clears when server stops)
+- 💾 Messages stay in memory; files are streamed to a temporary disk directory and cleared when the server stops
 - 📋 One-click copy to clipboard
 - 🎨 Responsive design for all screen sizes
 - 🔒 Local network only - no data leaves your network

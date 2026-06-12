@@ -36,7 +36,7 @@ The entire backend is in `main.go`. Web assets (`web/index.html`, `web/script.js
 **Backend core components:**
 
 - **Hub** — central WebSocket connection manager. Runs in its own goroutine with a `select` loop over `register`, `unregister`, and `broadcast` channels. Maintains a `clients` map of `*websocket.Conn → sender IP`.
-- **FileStore** — in-memory file storage protected by `sync.RWMutex`. Files are stored as base64-encoded content and cleared on server restart.
+- **FileStore** — in-memory metadata storage protected by `sync.RWMutex`. File content is streamed to a temporary disk directory and cleared on `/clear`, auto-clear, or server restart.
 
 **HTTP endpoints:** `/ws` (WebSocket), `POST /upload`, `GET /file/:id`, `/qr` (QR code PNG), `/api/version`, `POST /clear`, `POST /set-interval`, `POST /toggle-pause`.
 

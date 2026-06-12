@@ -2,8 +2,8 @@ package main
 
 import (
 	"embed"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -32,11 +33,10 @@ var upgrader = websocket.Upgrader{
 }
 
 type FileData struct {
-	ID      string `json:"id,omitempty"` // File ID for download
-	Name    string `json:"name"`
-	Size    int64  `json:"size"`
-	Type    string `json:"type"`
-	Content string `json:"content,omitempty"` // base64 encoded (only stored server-side)
+	ID   string `json:"id,omitempty"` // File ID for download
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+	Type string `json:"type"`
 }
 
 type ClearConfig struct {
@@ -61,34 +61,33 @@ type broadcastMsg struct {
 }
 
 type FileStore struct {
-	files map[string]*FileData
-	mu    sync.RWMutex
+	files   map[string]*FileData
+	mu      sync.RWMutex
+	tempDir string
 }
 
-func newFileStore() *FileStore {
-	return &FileStore{
-		files: make(map[string]*FileData),
+func newFileStore(tempDir string) *FileStore {
+	// Clean up any leftover files from a previous run, then recreate the directory.
+	if err := os.RemoveAll(tempDir); err != nil {
+		log.Printf("Warning: failed to remove old temp dir %s: %v", tempDir, err)
 	}
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		log.Fatalf("Failed to create temp dir %s: %v", tempDir, err)
+	}
+	return &FileStore{
+		files:   make(map[string]*FileData),
+		tempDir: tempDir,
+	}
+}
+
+func (fs *FileStore) filePath(id string) string {
+	return filepath.Join(fs.tempDir, id+".bin")
 }
 
 func (fs *FileStore) set(id string, file *FileData) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	// Only overwrite if the new file has content, or if it doesn't exist
-	if existing, exists := fs.files[id]; !exists || file.Content != "" {
-		fs.files[id] = file
-	} else {
-		// Keep existing file but update metadata if needed
-		if file.Name != "" {
-			existing.Name = file.Name
-		}
-		if file.Size > 0 {
-			existing.Size = file.Size
-		}
-		if file.Type != "" {
-			existing.Type = file.Type
-		}
-	}
+	fs.files[id] = file
 }
 
 func (fs *FileStore) get(id string) (*FileData, bool) {
@@ -101,6 +100,12 @@ func (fs *FileStore) get(id string) (*FileData, bool) {
 func (fs *FileStore) clear() {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	for id := range fs.files {
+		path := fs.filePath(id)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("Error removing temp file %s: %v", path, err)
+		}
+	}
 	fs.files = make(map[string]*FileData)
 }
 
@@ -229,7 +234,8 @@ func (h *Hub) run() {
 			message.SenderIP = h.clients[bm.sender]
 			h.mu.Unlock()
 
-			// Store file if present and prepare file data for broadcast
+			// Validate and sanitize file metadata before broadcast.
+			// Actual file content is stored on disk by the /upload endpoint.
 			if message.File != nil && message.ID != "" {
 				// Use file ID if provided, otherwise use message ID
 				fileID := message.File.ID
@@ -237,35 +243,18 @@ func (h *Hub) run() {
 					fileID = message.ID
 				}
 
-				// Only store file if it has content (from upload endpoint)
-				// Files sent via WebSocket don't have content, so we don't overwrite existing files
-				if message.File.Content != "" {
-					fileToStore := &FileData{
-						Name:    message.File.Name,
-						Size:    message.File.Size,
-						Type:    message.File.Type,
-						Content: message.File.Content,
+				if existingFile, exists := h.fileStore.get(fileID); exists {
+					log.Printf("Broadcasting file metadata: ID=%s, Name=%s, Size=%d", fileID, existingFile.Name, existingFile.Size)
+					message.File = &FileData{
+						ID:   fileID,
+						Name: existingFile.Name,
+						Size: existingFile.Size,
+						Type: existingFile.Type,
 					}
-					h.fileStore.set(fileID, fileToStore)
-					log.Printf("Stored file during broadcast: ID=%s, Name=%s, ContentLength=%d", fileID, message.File.Name, len(message.File.Content))
 				} else {
-					// Check if file exists in store
-					if existingFile, exists := h.fileStore.get(fileID); exists {
-						log.Printf("File already exists in store: ID=%s, Name=%s, ContentLength=%d", fileID, existingFile.Name, len(existingFile.Content))
-					} else {
-						log.Printf("Warning: File ID %s not found in store and no content provided", fileID)
-					}
+					log.Printf("Warning: File ID %s not found in store, dropping file from broadcast", fileID)
+					message.File = nil
 				}
-
-				// Create file data for broadcast (without content, with ID)
-				// This ensures all clients get the file metadata and can download it
-				fileData := &FileData{
-					ID:   fileID,
-					Name: message.File.Name,
-					Size: message.File.Size,
-					Type: message.File.Type,
-				}
-				message.File = fileData
 			}
 
 			h.mu.Lock()
@@ -428,9 +417,11 @@ func getLocalIP() string {
 
 func main() {
 	port := flag.String("port", "8080", "Port to run the server on")
+	maxFileSize := flag.Int64("max-file-size", 2*1024*1024*1024, "Maximum file upload size in bytes (default 2GB)")
 	flag.Parse()
 
-	fileStore := newFileStore()
+	tempDir := filepath.Join(os.TempDir(), "local-clipboard-uploads")
+	fileStore := newFileStore(tempDir)
 	hub := newHub(fileStore)
 	go hub.run()
 
@@ -554,33 +545,45 @@ func main() {
 			return
 		}
 
+		// Limit upload size and stream the body to disk instead of loading it into memory.
+		r.Body = http.MaxBytesReader(w, r.Body, *maxFileSize)
+
 		file, header, err := r.FormFile("file")
 		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				http.Error(w, "File too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "Error reading file", http.StatusBadRequest)
 			return
 		}
 		defer file.Close()
 
-		// Read file content
-		fileContent, err := io.ReadAll(file)
+		fileID := fmt.Sprintf("%d", time.Now().UnixNano())
+		tempPath := fileStore.filePath(fileID)
+
+		dst, err := os.Create(tempPath)
 		if err != nil {
-			http.Error(w, "Error reading file content", http.StatusInternalServerError)
+			http.Error(w, "Error creating temp file", http.StatusInternalServerError)
 			return
 		}
 
-		// Encode to base64
-		encoded := base64.StdEncoding.EncodeToString(fileContent)
-
-		fileData := &FileData{
-			Name:    header.Filename,
-			Size:    int64(len(fileContent)),
-			Type:    header.Header.Get("Content-Type"),
-			Content: encoded,
+		written, err := io.Copy(dst, file)
+		dst.Close()
+		if err != nil {
+			os.Remove(tempPath)
+			http.Error(w, "Error saving file", http.StatusInternalServerError)
+			return
 		}
 
-		fileID := fmt.Sprintf("%d", time.Now().UnixNano())
+		fileData := &FileData{
+			Name: header.Filename,
+			Size: written,
+			Type: header.Header.Get("Content-Type"),
+		}
 		fileStore.set(fileID, fileData)
-		log.Printf("File uploaded: ID=%s, Name=%s, Size=%d, ContentLength=%d", fileID, fileData.Name, fileData.Size, len(fileData.Content))
+		log.Printf("File uploaded: ID=%s, Name=%s, Size=%d", fileID, fileData.Name, fileData.Size)
 
 		// Return file ID
 		w.Header().Set("Content-Type", "application/json")
@@ -595,52 +598,40 @@ func main() {
 			return
 		}
 
-		file, ok := fileStore.get(fileID)
+		fileMeta, ok := fileStore.get(fileID)
 		if !ok {
 			log.Printf("File not found: %s", fileID)
 			http.NotFound(w, r)
 			return
 		}
 
-		if file.Content == "" {
-			log.Printf("File %s has no content", fileID)
-			http.Error(w, "File content is empty", http.StatusInternalServerError)
-			return
-		}
-
-		// Decode base64 content
-		content, err := base64.StdEncoding.DecodeString(file.Content)
+		tempPath := fileStore.filePath(fileID)
+		f, err := os.Open(tempPath)
 		if err != nil {
-			log.Printf("Error decoding file %s: %v", fileID, err)
-			http.Error(w, "Error decoding file", http.StatusInternalServerError)
+			log.Printf("Error opening file %s: %v", fileID, err)
+			http.Error(w, "File not available", http.StatusInternalServerError)
 			return
 		}
+		defer f.Close()
 
-		if len(content) == 0 {
-			log.Printf("File %s decoded to empty content", fileID)
-			http.Error(w, "File content is empty after decoding", http.StatusInternalServerError)
+		fi, err := f.Stat()
+		if err != nil {
+			log.Printf("Error stating file %s: %v", fileID, err)
+			http.Error(w, "File not available", http.StatusInternalServerError)
 			return
 		}
 
 		// Set content type, default to application/octet-stream if empty
-		contentType := file.Type
+		contentType := fileMeta.Type
 		if contentType == "" {
 			contentType = "application/octet-stream"
 		}
 
-		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, file.Name))
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileMeta.Name))
 
-		written, err := w.Write(content)
-		if err != nil {
-			log.Printf("Error writing file %s: %v", fileID, err)
-			return
-		}
-		if written != len(content) {
-			log.Printf("Warning: incomplete write for file %s: wrote %d of %d bytes", fileID, written, len(content))
-		}
-		log.Printf("Successfully served file %s (%s, %d bytes)", fileID, file.Name, len(content))
+		// Stream the file from disk; supports range requests and keeps memory usage low.
+		http.ServeContent(w, r, fileMeta.Name, fi.ModTime(), f)
+		log.Printf("Successfully served file %s (%s, %d bytes)", fileID, fileMeta.Name, fileMeta.Size)
 	})
 
 	addr := "0.0.0.0:" + *port
