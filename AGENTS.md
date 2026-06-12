@@ -92,6 +92,10 @@ go build -ldflags "-X main.Version=dev" -o local-clipboard main.go
 # Docker build (pass VERSION so /api/version reports correctly)
 docker build --build-arg VERSION=x.y.z -t local-clipboard .
 docker run -p 8080:8080 local-clipboard
+
+# When running in Docker, set LOCAL_CLIPBOARD_HOST to the host's reachable
+# address so the QR code points to something clients can actually reach:
+docker run -p 8080:8080 -e LOCAL_CLIPBOARD_HOST=192.168.1.100 local-clipboard
 ```
 
 Binaries are written to `./build/` and named:
