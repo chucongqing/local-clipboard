@@ -122,6 +122,52 @@ curl -s http://localhost:8080/r/my-room/api/messages \
   | xargs -n1 curl -LO
 ```
 
+## Shell wrapper
+
+You can download the helper script directly from the repository and source it into your shell:
+
+```bash
+source <(curl -fsSL https://raw.githubusercontent.com/chucongqing/local-clipboard/main/scripts/local-clipboard.sh)
+```
+
+Or save it first and then source it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chucongqing/local-clipboard/main/scripts/local-clipboard.sh -o local-clipboard.sh
+source ./local-clipboard.sh
+```
+
+Once sourced, use the functions:
+
+```bash
+# Configure target server and room (empty args keep the defaults)
+lc_set_env 192.168.1.100:8080 my-room http
+
+# Send text
+lc_send_text "hello from the shell"
+
+# Upload a file
+lc_send_file /path/to/file.txt
+
+# List messages and file URLs
+lc_messages
+
+# Download every file in the current room
+lc_download_all
+
+# Clear the room
+lc_clear
+
+# Server version
+lc_version
+```
+
+The wrapper uses the following environment variables (all have sensible defaults):
+
+- `LOCAL_CLIPBOARD_HOST` – default `localhost:8080`
+- `LOCAL_CLIPBOARD_ROOM` – default empty (the default room)
+- `LOCAL_CLIPBOARD_SCHEME` – default `http`
+
 ## Building from Source
 
 If you prefer to build from source:
