@@ -116,10 +116,12 @@ curl -s http://localhost:8080/r/my-room/api/messages | jq .
 
 ### Download all files from a room
 
+Use `-OJ` so `curl` respects the `Content-Disposition` header and keeps the original file name instead of the file ID:
+
 ```bash
 curl -s http://localhost:8080/r/my-room/api/messages \
   | jq -r '.files[].url' \
-  | xargs -n1 curl -LO
+  | xargs -n1 curl -fsSL -OJ
 ```
 
 ## Shell wrapper

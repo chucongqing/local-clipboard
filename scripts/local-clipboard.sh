@@ -105,7 +105,8 @@ lc_messages() {
 lc_download_all() {
     local url="$(_lc_base_url)/api/messages"
     if command -v jq >/dev/null 2>&1; then
-        curl -s "$url" | jq -r '.files[].url' | xargs -n1 curl -LO
+        # -OJ keeps the original filename from the Content-Disposition header
+        curl -s "$url" | jq -r '.files[].url' | xargs -n1 curl -fsSL -OJ
     else
         echo "lc_download_all requires jq to parse file URLs" >&2
         return 1
