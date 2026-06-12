@@ -378,20 +378,125 @@ function closeImageLightbox() {
   document.body.style.overflow = '';
 }
 
-async function uploadFile(file) {
-  const formData = new FormData();
-  formData.append('file', file);
+function uploadFile(item) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    item.xhr = xhr;
 
-  const response = await fetch(`${apiBase}/upload`, {
-    method: 'POST',
-    body: formData
+    const formData = new FormData();
+    formData.append('file', item.file);
+
+    xhr.upload.addEventListener('progress', event => {
+      if (event.lengthComputable) {
+        item.progress = Math.round((event.loaded / event.total) * 100);
+        updateFileChipProgress(item);
+      }
+    });
+
+    xhr.addEventListener('load', () => {
+      item.xhr = null;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const result = JSON.parse(xhr.responseText);
+          item.status = 'done';
+          item.progress = 100;
+          updateFileChipProgress(item);
+          resolve(result);
+        } catch (err) {
+          item.status = 'error';
+          updateFileChipProgress(item);
+          reject(new Error('Invalid upload response'));
+        }
+      } else {
+        item.status = 'error';
+        updateFileChipProgress(item);
+        reject(new Error(`Upload failed: ${xhr.statusText || xhr.status}`));
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      item.xhr = null;
+      item.status = 'error';
+      updateFileChipProgress(item);
+      reject(new Error('Upload failed'));
+    });
+
+    xhr.addEventListener('abort', () => {
+      item.xhr = null;
+      item.status = 'error';
+      updateFileChipProgress(item);
+      reject(new Error('Upload cancelled'));
+    });
+
+    item.status = 'uploading';
+    item.progress = 0;
+    updateFileChipProgress(item);
+    xhr.open('POST', `${apiBase}/upload`);
+    xhr.send(formData);
   });
+}
 
-  if (!response.ok) {
-    throw new Error('Upload failed');
+function updateFileChipProgress(item) {
+  if (!item.element) return;
+  const progressBar = item.element.querySelector('.file-chip-progress-bar');
+  const progressText = item.element.querySelector('.file-chip-progress-text');
+  const sizeSpan = item.element.querySelector('.file-chip-size');
+  const removeBtn = item.element.querySelector('.file-chip-remove');
+  const retryBtn = item.element.querySelector('.file-chip-retry');
+
+  item.element.classList.remove('uploading', 'error', 'done');
+
+  if (item.status === 'uploading') {
+    item.element.classList.add('uploading');
+    if (progressBar) progressBar.style.width = `${item.progress}%`;
+    if (progressText) {
+      progressText.style.display = 'inline';
+      progressText.textContent = `${item.progress}%`;
+    }
+    if (sizeSpan) sizeSpan.style.display = 'none';
+    if (removeBtn) removeBtn.style.display = 'flex';
+    if (retryBtn) retryBtn.style.display = 'none';
+  } else if (item.status === 'error') {
+    item.element.classList.add('error');
+    if (progressBar) progressBar.style.width = '0%';
+    if (progressText) {
+      progressText.style.display = 'inline';
+      progressText.textContent = 'Failed';
+    }
+    if (sizeSpan) sizeSpan.style.display = 'none';
+    if (removeBtn) removeBtn.style.display = 'flex';
+    if (retryBtn) retryBtn.style.display = 'flex';
+  } else if (item.status === 'done') {
+    item.element.classList.add('done');
+    if (progressBar) progressBar.style.width = '100%';
+    if (progressText) progressText.style.display = 'none';
+    if (sizeSpan) sizeSpan.style.display = 'inline';
+    if (removeBtn) removeBtn.style.display = 'flex';
+    if (retryBtn) retryBtn.style.display = 'none';
+  } else {
+    if (progressBar) progressBar.style.width = '0%';
+    if (progressText) progressText.style.display = 'none';
+    if (sizeSpan) sizeSpan.style.display = 'inline';
+    if (removeBtn) removeBtn.style.display = 'flex';
+    if (retryBtn) retryBtn.style.display = 'none';
+  }
+}
+
+function runWithConcurrency(tasks, limit) {
+  const results = new Array(tasks.length);
+  let index = 0;
+
+  async function worker() {
+    while (index < tasks.length) {
+      const currentIndex = index++;
+      results[currentIndex] = await tasks[currentIndex]();
+    }
   }
 
-  return await response.json();
+  const workers = Array(Math.min(limit, tasks.length))
+    .fill(null)
+    .map(worker);
+  return Promise.all(workers).then(() => results);
 }
 
 function sendOwnMessage(text, fileData) {
@@ -408,7 +513,8 @@ function sendOwnMessage(text, fileData) {
 
 async function sendMessage() {
   const text = messageInput.value.trim();
-  const hasFiles = selectedFiles.length > 0;
+  const filesToSend = selectedFiles.slice();
+  const hasFiles = filesToSend.length > 0;
 
   if ((!text && !hasFiles) || !ws || ws.readyState !== WebSocket.OPEN) {
     return;
@@ -419,42 +525,87 @@ async function sendMessage() {
 
   try {
     if (hasFiles) {
-      const filesToSend = selectedFiles.slice();
-      const textToSend = text;
-      let textSent = false;
+      for (const item of filesToSend) {
+        item.status = 'pending';
+        item.progress = 0;
+      }
+      renderAttachments();
 
-      for (let i = 0; i < filesToSend.length; i++) {
-        const item = filesToSend[i];
-        let uploadResult;
-        try {
-          uploadResult = await uploadFile(item.file);
-        } catch (error) {
-          alert(`Failed to upload ${item.file.name}.`);
-          continue;
+      const uploadTasks = filesToSend.map(
+        item => () =>
+          uploadFile(item)
+            .then(result => ({ item, result, success: true }))
+            .catch(error => {
+              console.error(`Upload failed for ${item.file.name}:`, error);
+              return { item, error, success: false };
+            })
+      );
+      const results = await runWithConcurrency(uploadTasks, 3);
+
+      let textSent = false;
+      for (const result of results) {
+        if (result.success) {
+          const fileData = {
+            id: result.result.id,
+            name: result.result.name,
+            size: result.result.size,
+            type: result.result.type
+          };
+          // Attach the text to the first successful file message
+          const attachText = !textSent ? text : '';
+          sendOwnMessage(attachText, fileData);
+          textSent = true;
         }
-        const fileData = {
-          id: uploadResult.id,
-          name: uploadResult.name,
-          size: uploadResult.size,
-          type: uploadResult.type
-        };
-        // Attach the text to the first file message so it stays associated
-        const attachText = !textSent ? textToSend : '';
-        sendOwnMessage(attachText, fileData);
+      }
+
+      const failedItems = results.filter(r => !r.success).map(r => r.item);
+      selectedFiles = failedItems;
+      renderAttachments();
+
+      // If we had text but every upload failed, still send the text alone
+      if (!textSent && text) {
+        sendOwnMessage(text, null);
         textSent = true;
       }
 
-      // If we had text but every upload failed, still send the text alone
-      if (!textSent && textToSend) {
-        sendOwnMessage(textToSend, null);
+      if (textSent || !hasFiles) {
+        messageInput.value = '';
+        messageInput.style.height = 'auto';
       }
     } else {
       sendOwnMessage(text, null);
+      messageInput.value = '';
+      messageInput.style.height = 'auto';
     }
+  } finally {
+    sendButton.textContent = '➤';
+    messageInput.focus();
+    updateSendButton();
+  }
+}
 
-    messageInput.value = '';
-    messageInput.style.height = 'auto';
-    clearFiles(false);
+async function retryUpload(item) {
+  if (item.status === 'uploading' || !ws || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  sendButton.disabled = true;
+  sendButton.textContent = '⌛';
+
+  try {
+    const result = await uploadFile(item);
+    const fileData = {
+      id: result.id,
+      name: result.name,
+      size: result.size,
+      type: result.type
+    };
+    sendOwnMessage('', fileData);
+    selectedFiles = selectedFiles.filter(f => f.id !== item.id);
+    renderAttachments();
+  } catch (error) {
+    console.error(`Retry failed for ${item.file.name}:`, error);
+    alert(`Failed to upload ${item.file.name}.`);
   } finally {
     sendButton.textContent = '➤';
     messageInput.focus();
@@ -478,6 +629,7 @@ function renderAttachments() {
   for (const item of selectedFiles) {
     const chip = document.createElement('div');
     chip.className = 'file-chip';
+    item.element = chip;
 
     const iconSpan = document.createElement('span');
     iconSpan.className = 'file-chip-icon';
@@ -495,6 +647,19 @@ function renderAttachments() {
     sizeSpan.textContent = formatFileSize(item.file.size);
     chip.appendChild(sizeSpan);
 
+    const progressText = document.createElement('span');
+    progressText.className = 'file-chip-progress-text';
+    progressText.style.display = 'none';
+    chip.appendChild(progressText);
+
+    const retryBtn = document.createElement('button');
+    retryBtn.type = 'button';
+    retryBtn.className = 'file-chip-retry';
+    retryBtn.title = 'Retry upload';
+    retryBtn.textContent = '↻';
+    retryBtn.addEventListener('click', () => retryUpload(item));
+    chip.appendChild(retryBtn);
+
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.className = 'file-chip-remove';
@@ -503,11 +668,23 @@ function renderAttachments() {
     removeBtn.addEventListener('click', () => removeFileChip(item.id, chip));
     chip.appendChild(removeBtn);
 
+    const progressWrap = document.createElement('div');
+    progressWrap.className = 'file-chip-progress';
+    const progressBar = document.createElement('div');
+    progressBar.className = 'file-chip-progress-bar';
+    progressWrap.appendChild(progressBar);
+    chip.appendChild(progressWrap);
+
     fileAttachmentsDiv.appendChild(chip);
+    updateFileChipProgress(item);
   }
 }
 
 function removeFileChip(id, chipEl) {
+  const item = selectedFiles.find(f => f.id === id);
+  if (item && item.xhr) {
+    item.xhr.abort();
+  }
   chipEl.classList.add('removing');
   setTimeout(() => {
     selectedFiles = selectedFiles.filter(f => f.id !== id);
@@ -518,6 +695,11 @@ function removeFileChip(id, chipEl) {
 }
 
 function clearFiles(animated = true) {
+  for (const item of selectedFiles) {
+    if (item.xhr) {
+      item.xhr.abort();
+    }
+  }
   if (animated && selectedFiles.length > 0) {
     const chips = fileAttachmentsDiv.querySelectorAll('.file-chip');
     chips.forEach(c => c.classList.add('removing'));
@@ -538,7 +720,14 @@ function clearFiles(animated = true) {
 function addFilesFromFileList(fileList) {
   if (!fileList || fileList.length === 0) return;
   for (const file of fileList) {
-    selectedFiles.push({ id: ++fileChipIdCounter, file });
+    selectedFiles.push({
+      id: ++fileChipIdCounter,
+      file,
+      status: 'pending',
+      progress: 0,
+      xhr: null,
+      element: null
+    });
   }
   renderAttachments();
   updateSendButton();
