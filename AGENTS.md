@@ -115,6 +115,7 @@ The backend lives entirely in `main.go`.
   - Auto-clear control channels: `clearNowCh`, `setIntervalCh`, `togglePauseCh`.
   - `ClearConfig` (interval in minutes, paused flag, next clear time).
 - **FileStore** — in-memory map of file ID → `FileData` (metadata only), protected by `sync.RWMutex`. File content is streamed to a temporary disk directory and cleared on cleanup.
+- **MessageStore** — in-memory append-only list of text/file `Message`s, protected by `sync.RWMutex`. It lets newly connected clients catch up on the current session history; it is cleared alongside files on `/clear` and auto-clear.
 
 ### HTTP/WebSocket endpoints
 
@@ -134,16 +135,17 @@ The backend lives entirely in `main.go`.
 
 ### Message flow
 
-1. Text: client sends a WebSocket `Message` → Hub sets `SenderIP` → Hub broadcasts to all clients.
-2. Files: client uploads each file via `POST /upload` → server stores base64 content in `FileStore` and returns an ID → client sends a WebSocket `Message` containing only file metadata and ID → Hub broadcasts metadata to all clients → recipients download via `GET /file/:id`.
+1. Text: client sends a WebSocket `Message` → Hub sets `SenderIP` → Hub persists the message in `MessageStore` → Hub broadcasts to all clients.
+2. Files: client uploads each file via `POST /upload` → server streams the file to a temp directory and stores metadata in `FileStore` → client sends a WebSocket `Message` containing only file metadata and ID → Hub persists the metadata in `MessageStore` → Hub broadcasts metadata to all clients → recipients download via `GET /file/:id`.
+3. Late join: a new WebSocket connection receives `type: "history"` containing all persisted messages, so the client can render the current session state.
 
 ### Auto-clear
 
 - Default interval is **10 minutes** and starts immediately in `hub.run()` when `IntervalMin > 0`.
 - A `nil` timer channel disables the timer without an extra flag.
-- On timer fire or manual clear, the Hub broadcasts `type: "clear"` to all clients.
+- On timer fire or manual clear, the Hub clears both `FileStore` and `MessageStore`, then broadcasts `type: "clear"` to all clients.
 - On interval/pause changes, it broadcasts `type: "config"` with the new state.
-- Newly connected clients receive the current config immediately.
+- Newly connected clients receive the current config and message history immediately.
 
 ### Connected-device count
 

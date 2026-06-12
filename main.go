@@ -46,13 +46,14 @@ type ClearConfig struct {
 }
 
 type Message struct {
-	ID       string       `json:"id"`
+	ID       string       `json:"id,omitempty"`
 	Type     string       `json:"type,omitempty"`
 	Text     string       `json:"text,omitempty"`
 	SenderIP string       `json:"senderIp,omitempty"`
 	File     *FileData    `json:"file,omitempty"`
 	Config   *ClearConfig `json:"config,omitempty"`
 	Count    int          `json:"count,omitempty"`
+	Messages []Message    `json:"messages,omitempty"`
 }
 
 type broadcastMsg struct {
@@ -109,6 +110,39 @@ func (fs *FileStore) clear() {
 	fs.files = make(map[string]*FileData)
 }
 
+// MessageStore keeps a history of text/file messages so late-joining clients
+// can catch up. It only stores metadata; file content lives on disk.
+type MessageStore struct {
+	messages []Message
+	mu       sync.RWMutex
+}
+
+func newMessageStore() *MessageStore {
+	return &MessageStore{
+		messages: make([]Message, 0),
+	}
+}
+
+func (ms *MessageStore) add(msg Message) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	ms.messages = append(ms.messages, msg)
+}
+
+func (ms *MessageStore) all() []Message {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	out := make([]Message, len(ms.messages))
+	copy(out, ms.messages)
+	return out
+}
+
+func (ms *MessageStore) clear() {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	ms.messages = make([]Message, 0)
+}
+
 type connInfo struct {
 	conn *websocket.Conn
 	ip   string
@@ -120,6 +154,7 @@ type Hub struct {
 	register      chan connInfo
 	unregister    chan *websocket.Conn
 	fileStore     *FileStore
+	messageStore  *MessageStore
 	mu            sync.Mutex
 	clearNowCh    chan struct{}
 	setIntervalCh chan int
@@ -127,13 +162,14 @@ type Hub struct {
 	clearConfig   ClearConfig
 }
 
-func newHub(fileStore *FileStore) *Hub {
+func newHub(fileStore *FileStore, messageStore *MessageStore) *Hub {
 	return &Hub{
 		clients:       make(map[*websocket.Conn]string),
 		broadcast:     make(chan broadcastMsg),
 		register:      make(chan connInfo),
 		unregister:    make(chan *websocket.Conn),
 		fileStore:     fileStore,
+		messageStore:  messageStore,
 		clearNowCh:    make(chan struct{}, 1),
 		setIntervalCh: make(chan int, 1),
 		togglePauseCh: make(chan struct{}, 1),
@@ -177,6 +213,20 @@ func (h *Hub) sendConfigToConn(conn *websocket.Conn) {
 	}
 }
 
+func (h *Hub) sendHistoryToConn(conn *websocket.Conn) {
+	history := h.messageStore.all()
+	if len(history) == 0 {
+		return
+	}
+	msg := Message{
+		Type:     "history",
+		Messages: history,
+	}
+	if err := conn.WriteJSON(msg); err != nil {
+		log.Printf("Error sending history to new client: %v", err)
+	}
+}
+
 func (h *Hub) run() {
 	var timerChan <-chan time.Time
 	if h.clearConfig.IntervalMin > 0 {
@@ -213,6 +263,7 @@ func (h *Hub) run() {
 			h.mu.Unlock()
 			log.Printf("Client connected: %s. Total devices: %d", ci.ip, count)
 			h.sendConfigToConn(ci.conn)
+			h.sendHistoryToConn(ci.conn)
 			h.broadcastToAll(Message{Type: "clients", Count: count})
 
 		case conn := <-h.unregister:
@@ -257,6 +308,11 @@ func (h *Hub) run() {
 				}
 			}
 
+			// Persist text/file messages so late-joining clients can catch up.
+			if message.Text != "" || message.File != nil {
+				h.messageStore.add(message)
+			}
+
 			h.mu.Lock()
 			for conn := range h.clients {
 				err := conn.WriteJSON(message)
@@ -270,6 +326,7 @@ func (h *Hub) run() {
 
 		case <-timerChan:
 			h.fileStore.clear()
+			h.messageStore.clear()
 			log.Printf("Auto-clear triggered (%d min)", h.clearConfig.IntervalMin)
 			h.broadcastToAll(Message{Type: "clear"})
 			next := time.Now().Add(time.Duration(h.clearConfig.IntervalMin) * time.Minute)
@@ -281,6 +338,7 @@ func (h *Hub) run() {
 
 		case <-h.clearNowCh:
 			h.fileStore.clear()
+			h.messageStore.clear()
 			log.Printf("Manual clear triggered")
 			h.broadcastToAll(Message{Type: "clear"})
 			if h.clearConfig.IntervalMin > 0 && !h.clearConfig.Paused {
@@ -422,7 +480,8 @@ func main() {
 
 	tempDir := filepath.Join(os.TempDir(), "local-clipboard-uploads")
 	fileStore := newFileStore(tempDir)
-	hub := newHub(fileStore)
+	messageStore := newMessageStore()
+	hub := newHub(fileStore, messageStore)
 	go hub.run()
 
 	// Serve static files from embedded filesystem

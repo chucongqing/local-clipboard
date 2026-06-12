@@ -14,6 +14,7 @@ A simple, elegant local network clipboard/chat application. Share text and files
 - 📱 Works on any device with a browser (desktop, mobile, tablet)
 - 🌐 No internet required - works on local network only
 - 💾 Messages stay in memory; files are streamed to a temporary disk directory and cleared when the server stops
+- 🕘 Late-joining devices catch up on the current session history
 - 📋 One-click copy to clipboard
 - 🎨 Responsive design for all screen sizes
 - 🔒 Local network only - no data leaves your network

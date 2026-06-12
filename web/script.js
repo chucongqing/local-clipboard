@@ -63,6 +63,16 @@ function connect() {
       statusDiv.textContent = `Connected ✅ · ${connectedCount} device${connectedCount !== 1 ? 's' : ''}`;
       return;
     }
+    if (data.type === 'history') {
+      clearAllMessages();
+      if (Array.isArray(data.messages)) {
+        for (const msg of data.messages) {
+          const fileId = msg.file?.id || msg.id;
+          addMessage(msg.text || '', msg.file, false, fileId || msg.id, msg.senderIp || '');
+        }
+      }
+      return;
+    }
     if (data.id && ownMessageIds.has(data.id)) {
       ownMessageIds.delete(data.id);
       return;
