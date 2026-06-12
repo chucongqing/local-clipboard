@@ -5,7 +5,7 @@ body = """
 
 {% for commit in commits %}\
 - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first }} \
-([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/MoKhajavi75/local-clipboard/commit/{{ commit.id }}))
+([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/chucongqing/local-clipboard/commit/{{ commit.id }}))
 {% endfor %}
 {% endfor %}\
 """

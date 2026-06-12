@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/mdp/qrterminal/v3"
 	"github.com/skip2/go-qrcode"
@@ -156,6 +157,26 @@ type clientInfo struct {
 	name string
 }
 
+// Room is an isolated chat/file-sharing space.
+type Room struct {
+	id           string
+	hub          *Hub
+	fileStore    *FileStore
+	messageStore *MessageStore
+	mu           sync.Mutex
+	emptySince   *time.Time
+	maxFileSize  int64
+}
+
+// RoomManager creates, caches, and cleans up rooms.
+type RoomManager struct {
+	rooms       map[string]*Room
+	mu          sync.RWMutex
+	baseTempDir string
+	roomTTL     time.Duration
+	maxFileSize int64
+}
+
 type Hub struct {
 	clients       map[*websocket.Conn]clientInfo // conn -> client info
 	broadcast     chan broadcastMsg
@@ -168,6 +189,7 @@ type Hub struct {
 	setIntervalCh chan int
 	togglePauseCh chan struct{}
 	clearConfig   ClearConfig
+	stopCh        chan struct{}
 }
 
 func newHub(fileStore *FileStore, messageStore *MessageStore) *Hub {
@@ -182,6 +204,114 @@ func newHub(fileStore *FileStore, messageStore *MessageStore) *Hub {
 		setIntervalCh: make(chan int, 1),
 		togglePauseCh: make(chan struct{}, 1),
 		clearConfig:   ClearConfig{IntervalMin: 10},
+		stopCh:        make(chan struct{}),
+	}
+}
+
+// sanitizeRoomID makes a room ID safe to use as a directory name.
+// It rejects path traversal and replaces unsafe separators.
+func sanitizeRoomID(id string) string {
+	id = strings.ReplaceAll(id, string(os.PathSeparator), "_")
+	id = strings.ReplaceAll(id, "/", "_")
+	id = strings.ReplaceAll(id, "\\", "_")
+	id = strings.ReplaceAll(id, "..", "_")
+	return id
+}
+
+func newRoom(id, baseTempDir string, maxFileSize int64) *Room {
+	safeID := sanitizeRoomID(id)
+	tempDir := filepath.Join(baseTempDir, "rooms", safeID)
+	if id == "" || id == "default" {
+		tempDir = filepath.Join(baseTempDir, "default")
+	}
+	fs := newFileStore(tempDir)
+	ms := newMessageStore()
+	hub := newHub(fs, ms)
+	go hub.run()
+	return &Room{
+		id:           id,
+		hub:          hub,
+		fileStore:    fs,
+		messageStore: ms,
+		maxFileSize:  maxFileSize,
+	}
+}
+
+func (r *Room) isEmpty() bool {
+	return r.hub.deviceCount() == 0
+}
+
+func newRoomManager(baseTempDir string, roomTTL time.Duration, maxFileSize int64) *RoomManager {
+	rm := &RoomManager{
+		rooms:       make(map[string]*Room),
+		baseTempDir: baseTempDir,
+		roomTTL:     roomTTL,
+		maxFileSize: maxFileSize,
+	}
+	go rm.cleanupLoop()
+	return rm
+}
+
+func (rm *RoomManager) Get(id string) *Room {
+	rm.mu.RLock()
+	room, ok := rm.rooms[id]
+	rm.mu.RUnlock()
+	if ok {
+		return room
+	}
+
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	if room, ok := rm.rooms[id]; ok {
+		return room
+	}
+	room = newRoom(id, rm.baseTempDir, rm.maxFileSize)
+	rm.rooms[id] = room
+	log.Printf("Room created: %s", id)
+	return room
+}
+
+func (rm *RoomManager) cleanupLoop() {
+	// Scan frequently enough to respect short TTLs without being excessive.
+	interval := rm.roomTTL / 2
+	if interval < 5*time.Second {
+		interval = 5 * time.Second
+	}
+	if interval > 30*time.Second {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		rm.cleanup()
+	}
+}
+
+func (rm *RoomManager) cleanup() {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	now := time.Now()
+	for id, room := range rm.rooms {
+		if id == "" || id == "default" {
+			continue
+		}
+		room.mu.Lock()
+		if room.isEmpty() {
+			if room.emptySince == nil {
+				room.emptySince = &now
+			} else if now.Sub(*room.emptySince) > rm.roomTTL {
+				room.mu.Unlock()
+				room.hub.stop()
+				room.fileStore.clear()
+				os.RemoveAll(room.fileStore.tempDir)
+				delete(rm.rooms, id)
+				log.Printf("Room cleaned up: %s", id)
+				continue
+			}
+		} else {
+			room.emptySince = nil
+		}
+		room.mu.Unlock()
 	}
 }
 
@@ -205,6 +335,24 @@ func (h *Hub) broadcastToAll(msg Message) {
 			conn.Close()
 		}
 	}
+}
+
+// deviceCount returns the number of unique devices currently connected.
+func (h *Hub) deviceCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return uniqueDeviceCount(h.clients)
+}
+
+// stop signals the hub run loop to exit and closes all client connections.
+func (h *Hub) stop() {
+	close(h.stopCh)
+	h.mu.Lock()
+	for conn := range h.clients {
+		conn.Close()
+		delete(h.clients, conn)
+	}
+	h.mu.Unlock()
 }
 
 func (h *Hub) sendConfigToConn(conn *websocket.Conn) {
@@ -404,6 +552,9 @@ func (h *Hub) run() {
 				Paused:        h.clearConfig.Paused,
 				NextClearTime: next,
 			}})
+
+		case <-h.stopCh:
+			return
 		}
 	}
 }
@@ -553,6 +704,150 @@ func getLocalIP() string {
 	return ""
 }
 
+func (room *Room) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Limit upload size and stream the body to disk instead of loading it into memory.
+	r.Body = http.MaxBytesReader(w, r.Body, room.maxFileSize)
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "File too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "Error reading file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	fileID := fmt.Sprintf("%d", time.Now().UnixNano())
+	tempPath := room.fileStore.filePath(fileID)
+
+	dst, err := os.Create(tempPath)
+	if err != nil {
+		http.Error(w, "Error creating temp file", http.StatusInternalServerError)
+		return
+	}
+
+	written, err := io.Copy(dst, file)
+	dst.Close()
+	if err != nil {
+		os.Remove(tempPath)
+		http.Error(w, "Error saving file", http.StatusInternalServerError)
+		return
+	}
+
+	fileData := &FileData{
+		Name: header.Filename,
+		Size: written,
+		Type: header.Header.Get("Content-Type"),
+	}
+	room.fileStore.set(fileID, fileData)
+	log.Printf("Room %s: file uploaded: ID=%s, Name=%s, Size=%d", room.id, fileID, fileData.Name, fileData.Size)
+
+	// Return file ID
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"id":"%s","name":"%s","size":%d,"type":"%s"}`, fileID, fileData.Name, fileData.Size, fileData.Type)
+}
+
+func (room *Room) handleFileDownload(w http.ResponseWriter, r *http.Request, fileID string) {
+	if fileID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	fileMeta, ok := room.fileStore.get(fileID)
+	if !ok {
+		log.Printf("Room %s: file not found: %s", room.id, fileID)
+		http.NotFound(w, r)
+		return
+	}
+
+	tempPath := room.fileStore.filePath(fileID)
+	f, err := os.Open(tempPath)
+	if err != nil {
+		log.Printf("Room %s: error opening file %s: %v", room.id, fileID, err)
+		http.Error(w, "File not available", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		log.Printf("Room %s: error stating file %s: %v", room.id, fileID, err)
+		http.Error(w, "File not available", http.StatusInternalServerError)
+		return
+	}
+
+	// Set content type, default to application/octet-stream if empty
+	contentType := fileMeta.Type
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	// Display images inline in the chat by default; force download when
+	// ?download=1 is provided or the file is not a recognized image.
+	if r.URL.Query().Get("download") == "1" || !isImageContentType(contentType, fileMeta.Name) {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileMeta.Name))
+	}
+
+	// Stream the file from disk; supports range requests and keeps memory usage low.
+	http.ServeContent(w, r, fileMeta.Name, fi.ModTime(), f)
+	log.Printf("Room %s: successfully served file %s (%s, %d bytes)", room.id, fileID, fileMeta.Name, fileMeta.Size)
+}
+
+func (room *Room) handleClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	select {
+	case room.hub.clearNowCh <- struct{}{}:
+	default:
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (room *Room) handleSetInterval(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Interval int `json:"interval"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	if req.Interval < 0 {
+		http.Error(w, "Interval must be >= 0", http.StatusBadRequest)
+		return
+	}
+	select {
+	case room.hub.setIntervalCh <- req.Interval:
+	default:
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (room *Room) handleTogglePause(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	select {
+	case room.hub.togglePauseCh <- struct{}{}:
+	default:
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // advertisedHost returns the host to advertise in the QR code and startup logs.
 // It prefers the LOCAL_CLIPBOARD_HOST environment variable, falling back to the
 // first local private IP address. This allows running inside Docker or behind NAT
@@ -564,229 +859,188 @@ func advertisedHost() string {
 	return getLocalIP()
 }
 
+func isValidRoomID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	if strings.ContainsAny(id, "/\\. ") || strings.Contains(id, "..") {
+		return false
+	}
+	// Reserved names that collide with global endpoints.
+	switch id {
+	case "api", "qr", "ws", "upload", "file", "clear":
+		return false
+	}
+	return true
+}
+
+func serveIndex(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	data, err := webFS.ReadFile("web/index.html")
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	w.Write(data)
+}
+
+func serveStatic(w http.ResponseWriter, r *http.Request, file string, contentType string) {
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("Content-Type", contentType)
+	data, err := webFS.ReadFile(file)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Write(data)
+}
+
+func serveVersion(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte(Version))
+}
+
+func serveNewRoom(rm *RoomManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		id := uuid.NewString()
+		rm.Get(id) // ensure the room is created
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"roomUrl": "/r/" + id})
+	}
+}
+
+func serveQR(w http.ResponseWriter, r *http.Request, port, roomPath string) {
+	host := advertisedHost()
+	if host == "" {
+		http.Error(w, "Unable to determine local IP", http.StatusInternalServerError)
+		return
+	}
+
+	url := fmt.Sprintf("http://%s:%s%s", host, port, roomPath)
+	png, err := qrcode.Encode(url, qrcode.Medium, 256)
+	if err != nil {
+		http.Error(w, "Error generating QR code", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Write(png)
+}
+
+func serveRoomAPI(room *Room, port string, w http.ResponseWriter, r *http.Request, subPath string) {
+	switch {
+	case subPath == "/ws":
+		room.hub.handleWebSocket(w, r)
+	case subPath == "/upload":
+		room.handleUpload(w, r)
+	case subPath == "/api/version":
+		serveVersion(w, r)
+	case subPath == "/qr":
+		roomPath := "/r/" + room.id
+		if room.id == "" || room.id == "default" {
+			roomPath = "/"
+		}
+		serveQR(w, r, port, roomPath)
+	case subPath == "/clear":
+		room.handleClear(w, r)
+	case subPath == "/set-interval":
+		room.handleSetInterval(w, r)
+	case subPath == "/toggle-pause":
+		room.handleTogglePause(w, r)
+	case strings.HasPrefix(subPath, "/file/"):
+		fileID := subPath[len("/file/"):]
+		room.handleFileDownload(w, r, fileID)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func route(rm *RoomManager, defaultRoom *Room, port string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		// Global static assets and API
+		switch path {
+		case "/":
+			serveIndex(w, r)
+			return
+		case "/styles.css":
+			serveStatic(w, r, "web/styles.css", "text/css")
+			return
+		case "/script.js":
+			serveStatic(w, r, "web/script.js", "application/javascript")
+			return
+		case "/api/version":
+			serveVersion(w, r)
+			return
+		case "/new-room":
+			serveNewRoom(rm)(w, r)
+			return
+		case "/qr":
+			serveQR(w, r, port, "/")
+			return
+		}
+
+		// Default room API
+		if path == "/ws" || path == "/upload" || path == "/clear" ||
+			path == "/set-interval" || path == "/toggle-pause" ||
+			path == "/api/version" || path == "/qr" || strings.HasPrefix(path, "/file/") {
+			serveRoomAPI(defaultRoom, port, w, r, path)
+			return
+		}
+
+		// Room paths: /r/{roomID} or /r/{roomID}/...
+		if strings.HasPrefix(path, "/r/") {
+			rest := path[3:]
+			idx := strings.Index(rest, "/")
+			var roomID, subPath string
+			if idx == -1 {
+				roomID = rest
+				subPath = "/"
+			} else {
+				roomID = rest[:idx]
+				subPath = rest[idx:]
+			}
+			if !isValidRoomID(roomID) {
+				http.NotFound(w, r)
+				return
+			}
+			room := rm.Get(roomID)
+			if subPath == "/" {
+				serveIndex(w, r)
+				return
+			}
+			serveRoomAPI(room, port, w, r, subPath)
+			return
+		}
+
+		http.NotFound(w, r)
+	}
+}
+
 func main() {
 	port := flag.String("port", "8080", "Port to run the server on")
 	maxFileSize := flag.Int64("max-file-size", 2*1024*1024*1024, "Maximum file upload size in bytes (default 2GB)")
+	roomTTL := flag.Duration("room-ttl", 5*time.Minute, "Time after which an empty room is cleaned up")
 	flag.Parse()
 
 	tempDir := filepath.Join(os.TempDir(), "local-clipboard-uploads")
-	fileStore := newFileStore(tempDir)
-	messageStore := newMessageStore()
-	hub := newHub(fileStore, messageStore)
-	go hub.run()
+	rm := newRoomManager(tempDir, *roomTTL, *maxFileSize)
+	defaultRoom := rm.Get("default")
 
-	// Serve static files from embedded filesystem
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Header().Set("Pragma", "no-cache")
-		w.Header().Set("Expires", "0")
-		switch r.URL.Path {
-		case "/":
-			data, err := webFS.ReadFile("web/index.html")
-			if err != nil {
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "text/html")
-			w.Write(data)
-		case "/styles.css":
-			w.Header().Set("Content-Type", "text/css")
-			data, err := webFS.ReadFile("web/styles.css")
-			if err != nil {
-				http.NotFound(w, r)
-				return
-			}
-			w.Write(data)
-		case "/script.js":
-			w.Header().Set("Content-Type", "application/javascript")
-			data, err := webFS.ReadFile("web/script.js")
-			if err != nil {
-				http.NotFound(w, r)
-				return
-			}
-			w.Write(data)
-		default:
-			http.NotFound(w, r)
-		}
-	})
-
-	// Version endpoint
-	http.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(Version))
-	})
-
-	// QR code endpoint
-	http.HandleFunc("/qr", func(w http.ResponseWriter, r *http.Request) {
-		host := advertisedHost()
-		if host == "" {
-			http.Error(w, "Unable to determine local IP", http.StatusInternalServerError)
-			return
-		}
-
-		url := fmt.Sprintf("http://%s:%s", host, *port)
-		png, err := qrcode.Encode(url, qrcode.Medium, 256)
-		if err != nil {
-			http.Error(w, "Error generating QR code", http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "image/png")
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Write(png)
-	})
-
-	http.HandleFunc("/ws", hub.handleWebSocket)
-
-	// Clear all messages and files
-	http.HandleFunc("/clear", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		select {
-		case hub.clearNowCh <- struct{}{}:
-		default:
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	// Set auto-clear interval
-	http.HandleFunc("/set-interval", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var req struct {
-			Interval int `json:"interval"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid request", http.StatusBadRequest)
-			return
-		}
-		if req.Interval < 0 {
-			http.Error(w, "Interval must be >= 0", http.StatusBadRequest)
-			return
-		}
-		select {
-		case hub.setIntervalCh <- req.Interval:
-		default:
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	// Toggle pause/resume for auto-clear timer
-	http.HandleFunc("/toggle-pause", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		select {
-		case hub.togglePauseCh <- struct{}{}:
-		default:
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	// File upload endpoint
-	http.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		// Limit upload size and stream the body to disk instead of loading it into memory.
-		r.Body = http.MaxBytesReader(w, r.Body, *maxFileSize)
-
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			var maxBytesErr *http.MaxBytesError
-			if errors.As(err, &maxBytesErr) {
-				http.Error(w, "File too large", http.StatusRequestEntityTooLarge)
-				return
-			}
-			http.Error(w, "Error reading file", http.StatusBadRequest)
-			return
-		}
-		defer file.Close()
-
-		fileID := fmt.Sprintf("%d", time.Now().UnixNano())
-		tempPath := fileStore.filePath(fileID)
-
-		dst, err := os.Create(tempPath)
-		if err != nil {
-			http.Error(w, "Error creating temp file", http.StatusInternalServerError)
-			return
-		}
-
-		written, err := io.Copy(dst, file)
-		dst.Close()
-		if err != nil {
-			os.Remove(tempPath)
-			http.Error(w, "Error saving file", http.StatusInternalServerError)
-			return
-		}
-
-		fileData := &FileData{
-			Name: header.Filename,
-			Size: written,
-			Type: header.Header.Get("Content-Type"),
-		}
-		fileStore.set(fileID, fileData)
-		log.Printf("File uploaded: ID=%s, Name=%s, Size=%d", fileID, fileData.Name, fileData.Size)
-
-		// Return file ID
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"id":"%s","name":"%s","size":%d,"type":"%s"}`, fileID, fileData.Name, fileData.Size, fileData.Type)
-	})
-
-	// File download endpoint
-	http.HandleFunc("/file/", func(w http.ResponseWriter, r *http.Request) {
-		fileID := r.URL.Path[len("/file/"):]
-		if fileID == "" {
-			http.NotFound(w, r)
-			return
-		}
-
-		fileMeta, ok := fileStore.get(fileID)
-		if !ok {
-			log.Printf("File not found: %s", fileID)
-			http.NotFound(w, r)
-			return
-		}
-
-		tempPath := fileStore.filePath(fileID)
-		f, err := os.Open(tempPath)
-		if err != nil {
-			log.Printf("Error opening file %s: %v", fileID, err)
-			http.Error(w, "File not available", http.StatusInternalServerError)
-			return
-		}
-		defer f.Close()
-
-		fi, err := f.Stat()
-		if err != nil {
-			log.Printf("Error stating file %s: %v", fileID, err)
-			http.Error(w, "File not available", http.StatusInternalServerError)
-			return
-		}
-
-		// Set content type, default to application/octet-stream if empty
-		contentType := fileMeta.Type
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-
-		// Display images inline in the chat by default; force download when
-		// ?download=1 is provided or the file is not a recognized image.
-		if r.URL.Query().Get("download") == "1" || !isImageContentType(contentType, fileMeta.Name) {
-			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileMeta.Name))
-		}
-
-		// Stream the file from disk; supports range requests and keeps memory usage low.
-		http.ServeContent(w, r, fileMeta.Name, fi.ModTime(), f)
-		log.Printf("Successfully served file %s (%s, %d bytes)", fileID, fileMeta.Name, fileMeta.Size)
-	})
+	http.HandleFunc("/", route(rm, defaultRoom, *port))
 
 	addr := "0.0.0.0:" + *port
 
@@ -796,6 +1050,7 @@ func main() {
 	log.Printf("Open http://localhost:%s on your laptop", *port)
 	if advertised != "" {
 		log.Printf("Open http://%s:%s on your phone", advertised, *port)
+		log.Printf("Open http://%s:%s/r/{room} for isolated rooms", advertised, *port)
 		log.Printf("Or scan the QR code in the web interface")
 		fmt.Fprintln(os.Stdout)
 		qrterminal.GenerateWithConfig(fmt.Sprintf("http://%s:%s", advertised, *port), qrterminal.Config{

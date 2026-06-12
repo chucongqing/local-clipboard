@@ -9,7 +9,7 @@
     <title>Local Clipboard</title>
     <link
       rel="stylesheet"
-      href="styles.css"
+      href="/styles.css"
     />
   </head>
   <body>
@@ -41,6 +41,25 @@
     <div class="container">
       <h1>📋 Local Clipboard</h1>
       <div
+        id="roomName"
+        class="room-name"
+        style="display: none"
+      ></div>
+      <div class="room-actions">
+        <button
+          id="newRoomBtn"
+          class="room-action-btn primary"
+        >
+          🔒 New Private Room
+        </button>
+        <button
+          id="copyRoomUrlBtn"
+          class="room-action-btn"
+        >
+          📋 Copy Room URL
+        </button>
+      </div>
+      <div
         id="status"
         class="status disconnected"
       >
@@ -69,6 +88,7 @@
             alt="QR Code"
             class="qr-image"
             loading="eager"
+            id="qrImage"
           />
           <p class="qr-hint">Scan this code with your phone to connect</p>
         </div>
@@ -182,6 +202,13 @@
         <span class="credits">
           Made with <span class="heart">❤️</span> by
           <a
+            href="https://github.com/chucongqing/local-clipboard"
+            target="_blank"
+            rel="noopener noreferrer"
+            >CCQ</a
+          >
+          and
+          <a
             href="https://github.com/MoKhajavi75/local-clipboard"
             target="_blank"
             rel="noopener noreferrer"
@@ -230,6 +257,6 @@
       </a>
     </div>
 
-    <script src="script.js"></script>
+    <script src="/script.js"></script>
   </body>
 </html>

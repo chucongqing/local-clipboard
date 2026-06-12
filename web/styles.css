@@ -7,7 +7,7 @@
 body {
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #0078d4 0%, #106ebe 100%);
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -30,10 +30,69 @@ body {
 }
 
 h1 {
-  color: #667eea;
+  color: #0078d4;
   text-align: center;
   font-size: 1.75em;
   margin-bottom: 10px;
+}
+
+.room-name {
+  text-align: center;
+  color: #106ebe;
+  font-size: 0.95em;
+  font-weight: 500;
+  margin-top: -5px;
+  margin-bottom: 5px;
+  word-break: break-all;
+}
+
+.room-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+
+.room-action-btn {
+  border: none;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 0.9em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  touch-action: manipulation;
+  white-space: nowrap;
+  background: #e9f3fc;
+  color: #0078d4;
+}
+
+.room-action-btn.primary {
+  background: linear-gradient(135deg, #0078d4 0%, #106ebe 100%);
+  color: white;
+}
+
+.room-action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 120, 212, 0.25);
+}
+
+.room-action-btn.primary:hover {
+  box-shadow: 0 4px 12px rgba(0, 120, 212, 0.4);
+}
+
+.room-action-btn:active {
+  transform: translateY(0);
+}
+
+.room-action-btn.copied {
+  background: #28a745;
+  color: white;
 }
 
 .version {
@@ -88,7 +147,7 @@ h1 {
 }
 
 .message.own {
-  background: #667eea;
+  background: #0078d4;
   color: white;
   margin-left: auto;
   max-width: 85%;
@@ -185,7 +244,7 @@ h1 {
 
 .message.other .copy-btn {
   background: rgba(0, 0, 0, 0.05);
-  color: #667eea;
+  color: #0078d4;
 }
 
 .download-btn {
@@ -198,7 +257,7 @@ h1 {
 
 .message.other .download-btn {
   background: rgba(0, 0, 0, 0.05);
-  color: #667eea;
+  color: #0078d4;
 }
 
 .action-btn:hover {
@@ -207,7 +266,7 @@ h1 {
 }
 
 .message.other .action-btn:hover {
-  background: rgba(102, 126, 234, 0.15);
+  background: rgba(0, 120, 212, 0.15);
 }
 
 .action-btn:active {
@@ -266,7 +325,7 @@ h1 {
 
 .input-area textarea:focus {
   outline: none;
-  border-color: #667eea;
+  border-color: #0078d4;
 }
 
 .input-buttons {
@@ -283,7 +342,7 @@ h1 {
   justify-content: center;
   border: none;
   border-radius: 10px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #0078d4 0%, #106ebe 100%);
   color: white;
   font-size: 1.2em;
   cursor: pointer;
@@ -297,7 +356,7 @@ h1 {
 
 .icon-btn:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 4px 12px rgba(0, 120, 212, 0.4);
 }
 
 .icon-btn:active {
@@ -321,8 +380,8 @@ h1 {
   align-items: center;
   gap: 6px;
   padding: 4px 6px 4px 10px;
-  background: rgba(102, 126, 234, 0.08);
-  border: 1px solid rgba(102, 126, 234, 0.2);
+  background: rgba(0, 120, 212, 0.08);
+  border: 1px solid rgba(0, 120, 212, 0.2);
   border-radius: 999px;
   font-size: 0.82em;
   color: #495057;
@@ -377,7 +436,7 @@ h1 {
 }
 
 .file-chip-remove {
-  background: rgba(102, 126, 234, 0.12);
+  background: rgba(0, 120, 212, 0.12);
   border: none;
   border-radius: 50%;
   width: 18px;
@@ -386,7 +445,7 @@ h1 {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  color: #667eea;
+  color: #0078d4;
   font-size: 0.75em;
   font-weight: bold;
   transition: all 0.15s ease;
@@ -396,7 +455,7 @@ h1 {
 }
 
 .file-chip-remove:hover {
-  background: rgba(102, 126, 234, 0.25);
+  background: rgba(0, 120, 212, 0.25);
 }
 
 .file-chip-remove:active {
@@ -415,7 +474,7 @@ h1 {
   position: fixed;
   inset: 0;
   z-index: 1000;
-  background: rgba(102, 126, 234, 0.85);
+  background: rgba(0, 120, 212, 0.85);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -426,7 +485,7 @@ h1 {
 
 .drop-overlay-content {
   background: white;
-  border: 3px dashed #667eea;
+  border: 3px dashed #0078d4;
   border-radius: 20px;
   padding: 40px 50px;
   display: flex;
@@ -683,12 +742,12 @@ h1 {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #667eea;
+  background: #0078d4;
   border-radius: 10px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #764ba2;
+  background: #106ebe;
 }
 
 /* QR Code Section */
@@ -715,7 +774,7 @@ h1 {
 }
 
 .qr-toggle {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #0078d4 0%, #106ebe 100%);
   color: white;
   border: none;
   border-radius: 8px;
@@ -729,7 +788,7 @@ h1 {
 
 .qr-toggle:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+  box-shadow: 0 4px 12px rgba(0, 120, 212, 0.3);
 }
 
 .qr-toggle:active {
@@ -908,6 +967,29 @@ h1 {
   }
 }
 
+/* Desktop layout: expand the card and message area while keeping a border */
+@media (min-width: 769px) {
+  body {
+    padding: 24px;
+  }
+
+  .container {
+    max-width: min(1000px, calc(100vw - 80px));
+    padding: 28px;
+    gap: 18px;
+  }
+
+  .messages {
+    min-height: 400px;
+    max-height: 70vh;
+  }
+
+  .room-action-btn {
+    padding: 10px 18px;
+    font-size: 0.95em;
+  }
+}
+
 /* Auto-clear bar */
 .auto-clear-bar {
   display: flex;
@@ -943,7 +1025,7 @@ h1 {
   appearance: none;
   -webkit-appearance: none;
   background-color: white;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23667eea' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%230078d4' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
   border: 1.5px solid #dee2e6;
@@ -961,8 +1043,8 @@ h1 {
 
 .auto-clear-select:focus {
   outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+  border-color: #0078d4;
+  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.15);
 }
 
 .auto-clear-select:hover {
@@ -972,11 +1054,11 @@ h1 {
 .countdown-display {
   font-size: 0.82em;
   font-weight: 600;
-  color: #667eea;
+  color: #0078d4;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   padding: 4px 8px;
-  background: rgba(102, 126, 234, 0.08);
+  background: rgba(0, 120, 212, 0.08);
   border-radius: 6px;
 }
 
@@ -995,15 +1077,15 @@ h1 {
 }
 
 .pause-resume-btn {
-  background: rgba(102, 126, 234, 0.1);
-  color: #667eea;
+  background: rgba(0, 120, 212, 0.1);
+  color: #0078d4;
   min-width: 32px;
   padding: 5px 8px;
   font-size: 1em;
 }
 
 .pause-resume-btn:hover {
-  background: rgba(102, 126, 234, 0.2);
+  background: rgba(0, 120, 212, 0.2);
   transform: scale(1.05);
 }
 
@@ -1012,13 +1094,13 @@ h1 {
 }
 
 .clear-now-btn {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #0078d4 0%, #106ebe 100%);
   color: white;
 }
 
 .clear-now-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+  box-shadow: 0 4px 12px rgba(0, 120, 212, 0.3);
 }
 
 .clear-now-btn:active {
@@ -1135,7 +1217,7 @@ h1 {
 }
 
 .lightbox-download {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #0078d4 0%, #106ebe 100%);
   color: white;
   text-decoration: none;
   padding: 10px 22px;
@@ -1147,7 +1229,7 @@ h1 {
 
 .lightbox-download:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 14px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 4px 14px rgba(0, 120, 212, 0.4);
 }
 
 .lightbox-download:active {

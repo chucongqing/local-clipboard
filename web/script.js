@@ -13,6 +13,8 @@ const imageLightbox = document.getElementById('imageLightbox');
 const lightboxImage = document.getElementById('lightboxImage');
 const lightboxClose = document.getElementById('lightboxClose');
 const lightboxDownload = document.getElementById('lightboxDownload');
+const newRoomBtn = document.getElementById('newRoomBtn');
+const copyRoomUrlBtn = document.getElementById('copyRoomUrlBtn');
 
 let ws = null;
 const ownMessageIds = new Set();
@@ -23,9 +25,13 @@ let countdownInterval = null;
 let connectedCount = 0;
 let myName = '';
 
+const pathParts = window.location.pathname.split('/');
+const roomPath = pathParts[1] === 'r' && pathParts[2] ? `/r/${pathParts[2]}` : '';
+const apiBase = roomPath;
+
 function connect() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws`;
+  const wsUrl = `${protocol}//${window.location.host}${apiBase}/ws`;
 
   ws = new WebSocket(wsUrl);
 
@@ -162,7 +168,7 @@ function addMessage(text, file, isOwn, messageId, senderIp, senderName) {
     if (isImageFile(file)) {
       const img = document.createElement('img');
       img.className = 'message-image';
-      img.src = `/file/${fileId}`;
+      img.src = `${apiBase}/file/${fileId}`;
       img.alt = file.name;
       img.loading = 'lazy';
       img.onclick = () => openImageLightbox(fileId, file.name);
@@ -310,7 +316,7 @@ function fallbackCopy(text, onSuccess) {
 }
 
 function downloadFile(fileId, fileName) {
-  const url = `/file/${fileId}?download=1`;
+  const url = `${apiBase}/file/${fileId}?download=1`;
   const link = document.createElement('a');
   link.href = url;
   link.download = fileName;
@@ -321,9 +327,9 @@ function downloadFile(fileId, fileName) {
 
 function openImageLightbox(fileId, fileName) {
   if (!imageLightbox || !lightboxImage || !lightboxDownload) return;
-  lightboxImage.src = `/file/${fileId}`;
+  lightboxImage.src = `${apiBase}/file/${fileId}`;
   lightboxImage.alt = fileName || 'Preview';
-  lightboxDownload.href = `/file/${fileId}?download=1`;
+  lightboxDownload.href = `${apiBase}/file/${fileId}?download=1`;
   lightboxDownload.download = fileName || '';
   imageLightbox.style.display = 'flex';
   document.body.style.overflow = 'hidden';
@@ -342,7 +348,7 @@ async function uploadFile(file) {
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await fetch('/upload', {
+  const response = await fetch(`${apiBase}/upload`, {
     method: 'POST',
     body: formData
   });
@@ -668,6 +674,11 @@ document.getElementById('dismissUpdate')?.addEventListener('click', dismissUpdat
 const qrToggle = document.getElementById('qrToggle');
 const qrContainer = document.getElementById('qrContainer');
 const qrSection = document.getElementById('qrSection');
+const qrImage = document.getElementById('qrImage');
+
+if (roomPath && qrImage) {
+  qrImage.src = `${apiBase}/qr`;
+}
 
 // Hide QR section on mobile devices
 if (isMobile()) {
@@ -686,7 +697,7 @@ if (isMobile()) {
 }
 
 intervalSelect.addEventListener('change', () => {
-  fetch('/set-interval', {
+  fetch(`${apiBase}/set-interval`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ interval: parseInt(intervalSelect.value, 10) })
@@ -694,14 +705,70 @@ intervalSelect.addEventListener('change', () => {
 });
 
 pauseResumeBtn.addEventListener('click', () => {
-  fetch('/toggle-pause', { method: 'POST' }).catch(err =>
+  fetch(`${apiBase}/toggle-pause`, { method: 'POST' }).catch(err =>
     console.error('Failed to toggle pause:', err)
   );
 });
 
 clearNowBtn.addEventListener('click', () => {
-  fetch('/clear', { method: 'POST' }).catch(err => console.error('Failed to clear:', err));
+  fetch(`${apiBase}/clear`, { method: 'POST' }).catch(err => console.error('Failed to clear:', err));
 });
+
+function showButtonCopied(button, label) {
+  const originalText = button.textContent;
+  button.classList.add('copied');
+  button.textContent = '✓ ' + label;
+  setTimeout(() => {
+    button.classList.remove('copied');
+    button.textContent = originalText;
+  }, 2000);
+}
+
+async function copyRoomUrl(button) {
+  const url = window.location.href;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      fallbackCopy(url, () => {});
+    }
+    showButtonCopied(button, 'Copied');
+  } catch (err) {
+    console.error('Copy room URL failed:', err);
+    fallbackCopy(url, () => showButtonCopied(button, 'Copied'));
+  }
+}
+
+async function createPrivateRoom(button) {
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = '⌛ Creating...';
+  try {
+    const response = await fetch('/new-room', { method: 'POST' });
+    if (!response.ok) {
+      throw new Error('Failed to create room');
+    }
+    const data = await response.json();
+    if (data.roomUrl) {
+      window.location.href = data.roomUrl;
+    } else {
+      throw new Error('Invalid response');
+    }
+  } catch (err) {
+    console.error('Create private room failed:', err);
+    alert('Failed to create private room. Please try again.');
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
+if (copyRoomUrlBtn) {
+  copyRoomUrlBtn.addEventListener('click', () => copyRoomUrl(copyRoomUrlBtn));
+}
+
+if (newRoomBtn) {
+  newRoomBtn.addEventListener('click', () => createPrivateRoom(newRoomBtn));
+}
 
 // Image lightbox events
 if (lightboxClose) {
@@ -765,6 +832,15 @@ window.addEventListener('drop', e => {
     addFilesFromFileList(e.dataTransfer.files);
   }
 });
+
+// Display room name if in a room
+if (roomPath) {
+  const roomNameDiv = document.getElementById('roomName');
+  if (roomNameDiv) {
+    roomNameDiv.textContent = `Room: ${pathParts[2]}`;
+    roomNameDiv.style.display = 'block';
+  }
+}
 
 // Check for updates on page load
 checkForUpdates();
