@@ -476,7 +476,7 @@ async function checkForUpdates() {
 
     // Check GitHub for latest release
     const githubResponse = await fetch(
-      'https://api.github.com/repos/MoKhajavi75/local-clipboard/releases/latest',
+      'https://api.github.com/repos/chucongqing/local-clipboard/releases/latest',
       { cache: 'no-cache' }
     );
 

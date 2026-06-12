@@ -168,7 +168,7 @@ This is important behind reverse proxies or Docker, where NAT would otherwise ma
 - Filters echoed own messages using an `ownMessageIds` Set keyed by message ID.
 - Multi-file attachment via `<input type="file" multiple>`; selected files render as chips below the textarea.
 - `dir="auto"` on message text and textarea for automatic RTL/LTR handling.
-- Update checker queries `api.github.com/repos/MoKhajavi75/local-clipboard/releases/latest` on load and shows a banner when a newer release exists.
+- Update checker queries `api.github.com/repos/chucongqing/local-clipboard/releases/latest` on load and shows a banner when a newer release exists.
 - Mobile devices hide the QR section via `isMobile()`.
 
 ## Code style guidelines
