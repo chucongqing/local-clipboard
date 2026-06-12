@@ -126,43 +126,60 @@ curl -s http://localhost:8080/r/my-room/api/messages \
 
 ## Shell wrapper
 
-You can download the helper script directly from the repository and source it into your shell:
+A small CLI wrapper is available at `scripts/lcb` (with an `lclip` symlink).
+
+### Install
+
+Download it and make it executable:
 
 ```bash
-source <(curl -fsSL https://raw.githubusercontent.com/chucongqing/local-clipboard/main/scripts/local-clipboard.sh)
+curl -fsSL https://raw.githubusercontent.com/chucongqing/local-clipboard/main/scripts/lcb -o lcb
+chmod +x lcb
+
+# Optional: put it in your PATH
+mv lcb ~/.local/bin/
 ```
 
-Or save it first and then source it:
+Or source it directly into your current shell:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chucongqing/local-clipboard/main/scripts/local-clipboard.sh -o local-clipboard.sh
-source ./local-clipboard.sh
+source <(curl -fsSL https://raw.githubusercontent.com/chucongqing/local-clipboard/main/scripts/lcb)
 ```
 
-Once sourced, use the functions:
+When sourced, `lcb set-env` exports the environment variables directly. When run as a standalone script, use `eval`:
 
 ```bash
-# Configure target server and room (empty args keep the defaults)
-lc_set_env 192.168.1.100:8080 my-room http
+eval "$(lcb set-env 192.168.1.100:8080 my-room http)"
+```
+
+### Usage
+
+```bash
+lcb help
+
+# Configure target server and room
+lcb set-env 192.168.1.100:8080 my-room http
 
 # Send text
-lc_send_text "hello from the shell"
+lcb send-text "hello from the shell"
 
 # Upload a file
-lc_send_file /path/to/file.txt
+lcb send-file /path/to/file.txt
 
 # List messages and file URLs
-lc_messages
+lcb messages
 
-# Download every file in the current room
-lc_download_all
+# Download every file in the current room (preserves original file names)
+lcb download-all
 
 # Clear the room
-lc_clear
+lcb clear
 
 # Server version
-lc_version
+lcb version
 ```
+
+`lclip` is an alias for `lcb`, so all commands also work as `lclip send-text ...`, etc.
 
 The wrapper uses the following environment variables (all have sensible defaults):
 

@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+#
+# Local Clipboard CLI wrapper
+#
+# Can be used as a standalone command:
+#   chmod +x scripts/lcb
+#   ./scripts/lcb help
+#
+# Or sourced into the current shell:
+#   source scripts/lcb
+#   lcb help
+#
+# When sourced, "lcb set-env" exports variables directly.
+# When run as a script, "lcb set-env" prints export statements for eval:
+#   eval "$(lcb set-env 192.168.1.100:8080 my-room http)"
+
+# Detect whether this file is being sourced.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    LCB_SOURCED=1
+fi
+
+# Command name to show in help text.
+LCB_CMD="lcb"
+if [[ -z "${LCB_SOURCED}" ]]; then
+    LCB_CMD=$(basename "$0")
+fi
+
+# Default environment values
+: "${LOCAL_CLIPBOARD_HOST:=localhost:8080}"
+: "${LOCAL_CLIPBOARD_ROOM:=}"
+: "${LOCAL_CLIPBOARD_SCHEME:=http}"
+
+_lcb_base_url() {
+    local room_path=""
+    if [ -n "$LOCAL_CLIPBOARD_ROOM" ]; then
+        room_path="/r/$LOCAL_CLIPBOARD_ROOM"
+    fi
+    echo "${LOCAL_CLIPBOARD_SCHEME}://${LOCAL_CLIPBOARD_HOST}${room_path}"
+}
+
+_lcb_usage() {
+    cat <<EOF
+Usage: ${LCB_CMD} <command> [args]
+
+Commands:
+  help                            Show this help
+  set-env [HOST] [ROOM] [SCHEME]  Configure server/room (empty args use defaults)
+  send-text "MESSAGE"             Send a text message
+  send-file /path/to/file         Upload a file
+  messages                        List messages and file URLs
+  download-all                    Download all files (preserves original names)
+  clear                           Clear all messages and files
+  set-interval N                  Set auto-clear interval in minutes
+  pause                           Toggle the auto-clear timer
+  resume                          Toggle the auto-clear timer (same as pause)
+  version                         Show server version
+
+Environment variables (with defaults):
+  LOCAL_CLIPBOARD_HOST            localhost:8080
+  LOCAL_CLIPBOARD_ROOM            (empty -> default room)
+  LOCAL_CLIPBOARD_SCHEME          http
+
+Set environment from a sourced shell:
+  source scripts/lcb
+  ${LCB_CMD} set-env 192.168.1.100:8080 my-room http
+
+Set environment from a subshell command:
+  eval "\$(${LCB_CMD} set-env 192.168.1.100:8080 my-room http)"
+
+Examples:
+  ${LCB_CMD} send-text "hello from cli"
+  ${LCB_CMD} send-file /path/to/file.txt
+  ${LCB_CMD} messages
+  ${LCB_CMD} download-all
+  ${LCB_CMD} clear
+EOF
+}
+
+lcb() {
+    local cmd="${1:-help}"
+    shift 2>/dev/null || true
+
+    case "$cmd" in
+        help|-h|--help)
+            _lcb_usage
+            ;;
+        set-env|set_env)
+            _lcb_set_env "$@"
+            ;;
+        send-text|send_text)
+            _lcb_send_text "$@"
+            ;;
+        send-file|send_file)
+            _lcb_send_file "$@"
+            ;;
+        messages)
+            _lcb_messages
+            ;;
+        download-all|download_all)
+            _lcb_download_all
+            ;;
+        clear)
+            _lcb_clear
+            ;;
+        set-interval|set_interval)
+            _lcb_set_interval "$@"
+            ;;
+        pause|resume)
+            _lcb_toggle_pause "$cmd"
+            ;;
+        version)
+            _lcb_version
+            ;;
+        *)
+            echo "Unknown command: $cmd" >&2
+            _lcb_usage >&2
+            return 1
+            ;;
+    esac
+}
+
+_lcb_set_env() {
+    LOCAL_CLIPBOARD_HOST="${1:-localhost:8080}"
+    LOCAL_CLIPBOARD_ROOM="${2:-}"
+    LOCAL_CLIPBOARD_SCHEME="${3:-http}"
+    export LOCAL_CLIPBOARD_HOST LOCAL_CLIPBOARD_ROOM LOCAL_CLIPBOARD_SCHEME
+
+    if [[ -n "${LCB_SOURCED}" ]]; then
+        echo "local-clipboard env: ${LOCAL_CLIPBOARD_SCHEME}://${LOCAL_CLIPBOARD_HOST} room=${LOCAL_CLIPBOARD_ROOM:-default}"
+    else
+        echo "export LOCAL_CLIPBOARD_HOST=\"${LOCAL_CLIPBOARD_HOST}\""
+        echo "export LOCAL_CLIPBOARD_ROOM=\"${LOCAL_CLIPBOARD_ROOM}\""
+        echo "export LOCAL_CLIPBOARD_SCHEME=\"${LOCAL_CLIPBOARD_SCHEME}\""
+        echo "# Run the above with: eval \"\$(lcb set-env ...)\""
+    fi
+}
+
+_lcb_send_text() {
+    local text="$*"
+    local url="$(_lcb_base_url)/api/send"
+
+    if [ -z "$text" ]; then
+        echo "Usage: lcb send-text \"message\"" >&2
+        return 1
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        curl -s -X POST "$url" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg text "$text" '{text: $text}')"
+    else
+        curl -s -X POST "$url" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\":\"$text\"}"
+    fi
+    echo
+}
+
+_lcb_send_file() {
+    local file="$1"
+    if [ -z "$file" ]; then
+        echo "Usage: lcb send-file /path/to/file" >&2
+        return 1
+    fi
+    if [ ! -f "$file" ]; then
+        echo "File not found: $file" >&2
+        return 1
+    fi
+
+    local url="$(_lcb_base_url)/api/send"
+    curl -s -X POST "$url" -F "file=@$file"
+    echo
+}
+
+_lcb_messages() {
+    local url="$(_lcb_base_url)/api/messages"
+    if command -v jq >/dev/null 2>&1; then
+        curl -s "$url" | jq .
+    else
+        curl -s "$url"
+    fi
+}
+
+_lcb_download_all() {
+    local url="$(_lcb_base_url)/api/messages"
+    if command -v jq >/dev/null 2>&1; then
+        # -OJ keeps the original filename from the Content-Disposition header
+        curl -s "$url" | jq -r '.files[].url' | xargs -n1 curl -fsSL -OJ
+    else
+        echo "lcb download-all requires jq to parse file URLs" >&2
+        return 1
+    fi
+}
+
+_lcb_clear() {
+    local url="$(_lcb_base_url)/clear"
+    curl -s -X POST "$url"
+    echo "Cleared room: ${LOCAL_CLIPBOARD_ROOM:-default}"
+}
+
+_lcb_set_interval() {
+    local minutes="$1"
+    if ! [[ "$minutes" =~ ^[0-9]+$ ]]; then
+        echo "Usage: lcb set-interval N  (N must be a non-negative integer)" >&2
+        return 1
+    fi
+
+    local url="$(_lcb_base_url)/set-interval"
+    curl -s -X POST "$url" \
+        -H "Content-Type: application/json" \
+        -d "{\"interval\":$minutes}"
+    echo "Auto-clear interval set to $minutes minute(s)"
+}
+
+_lcb_toggle_pause() {
+    local action="$1"
+    local url="$(_lcb_base_url)/toggle-pause"
+    curl -s -X POST "$url"
+    echo "Auto-clear $action toggled for room: ${LOCAL_CLIPBOARD_ROOM:-default}"
+}
+
+_lcb_version() {
+    local url="$(_lcb_base_url)/api/version"
+    curl -s "$url"
+    echo
+}
+
+# If sourced, expose lcb and lclip functions.
+# If executed, dispatch immediately.
+if [[ -n "${LCB_SOURCED}" ]]; then
+    lclip() {
+        lcb "$@"
+    }
+else
+    lcb "$@"
+fi
