@@ -74,6 +74,54 @@ The terminal will display the server URLs for both localhost and your local netw
    - Click "Copy" to copy text to clipboard
    - Click "Download" to save files
 
+## HTTP API
+
+You can also send text or files via `curl` without opening the web UI. The room is created automatically if it does not exist.
+
+### Send text
+
+```bash
+# Default room
+curl -s -X POST http://localhost:8080/api/send \
+  -H "Content-Type: application/json" \
+  -d '{"text":"hello from curl"}'
+
+# Private room (created automatically if missing)
+curl -s -X POST http://localhost:8080/r/my-room/api/send \
+  -H "Content-Type: application/json" \
+  -d '{"text":"hello in my-room"}'
+```
+
+### Upload a file
+
+```bash
+# Default room
+curl -s -X POST http://localhost:8080/api/send \
+  -F "file=@/path/to/file.txt"
+
+# Private room
+curl -s -X POST http://localhost:8080/r/my-room/api/send \
+  -F "file=@/path/to/file.txt"
+```
+
+### List messages and file URLs
+
+```bash
+# Default room
+curl -s http://localhost:8080/api/messages | jq .
+
+# Private room
+curl -s http://localhost:8080/r/my-room/api/messages | jq .
+```
+
+### Download all files from a room
+
+```bash
+curl -s http://localhost:8080/r/my-room/api/messages \
+  | jq -r '.files[].url' \
+  | xargs -n1 curl -LO
+```
+
 ## Building from Source
 
 If you prefer to build from source:

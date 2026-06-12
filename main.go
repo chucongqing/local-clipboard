@@ -457,11 +457,15 @@ func (h *Hub) run() {
 
 		case bm := <-h.broadcast:
 			message := bm.msg
-			// Set sender IP and name
+			// Set sender IP and name when the message comes from a real WebSocket client.
+			// HTTP-injected messages already have these fields populated.
 			h.mu.Lock()
-			senderInfo := h.clients[bm.sender]
-			message.SenderIP = senderInfo.ip
-			message.SenderName = senderInfo.name
+			if bm.sender != nil {
+				if senderInfo, ok := h.clients[bm.sender]; ok {
+					message.SenderIP = senderInfo.ip
+					message.SenderName = senderInfo.name
+				}
+			}
 			h.mu.Unlock()
 
 			// Validate and sanitize file metadata before broadcast.
@@ -875,6 +879,87 @@ func (room *Room) handleMessages(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func (room *Room) handleSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	messageID := fmt.Sprintf("%d", time.Now().UnixNano())
+	msg := Message{
+		ID:         messageID,
+		SenderIP:   realIP(r),
+		SenderName: generateChineseName(),
+	}
+
+	contentType := r.Header.Get("Content-Type")
+	hasFile := strings.HasPrefix(contentType, "multipart/form-data")
+
+	if hasFile {
+		// Limit upload size and stream the body to disk.
+		r.Body = http.MaxBytesReader(w, r.Body, room.maxFileSize)
+
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				http.Error(w, "File too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "Error reading file", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		fileID := fmt.Sprintf("%d", time.Now().UnixNano())
+		tempPath := room.fileStore.filePath(fileID)
+
+		dst, err := os.Create(tempPath)
+		if err != nil {
+			http.Error(w, "Error creating temp file", http.StatusInternalServerError)
+			return
+		}
+
+		written, err := io.Copy(dst, file)
+		dst.Close()
+		if err != nil {
+			os.Remove(tempPath)
+			http.Error(w, "Error saving file", http.StatusInternalServerError)
+			return
+		}
+
+		fileData := &FileData{
+			ID:   fileID,
+			Name: header.Filename,
+			Size: written,
+			Type: header.Header.Get("Content-Type"),
+		}
+		room.fileStore.set(fileID, fileData)
+
+		msg.File = fileData
+		msg.ID = fileID
+	} else {
+		var req struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(req.Text) == "" {
+			http.Error(w, "text is required", http.StatusBadRequest)
+			return
+		}
+		msg.Text = req.Text
+	}
+
+	// Persist and broadcast to connected WebSocket clients.
+	room.hub.broadcast <- broadcastMsg{msg: msg, sender: nil}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(msg)
+}
+
 func (room *Room) handleClear(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1023,6 +1108,8 @@ func serveRoomAPI(room *Room, port string, w http.ResponseWriter, r *http.Reques
 		serveVersion(w, r)
 	case subPath == "/api/messages":
 		room.handleMessages(w, r)
+	case subPath == "/api/send":
+		room.handleSend(w, r)
 	case subPath == "/qr":
 		roomPath := "/r/" + room.id
 		if room.id == "" || room.id == "default" {
@@ -1064,6 +1151,9 @@ func route(rm *RoomManager, defaultRoom *Room, port string) http.HandlerFunc {
 		case "/api/messages":
 			serveRoomAPI(defaultRoom, port, w, r, "/api/messages")
 			return
+		case "/api/send":
+			serveRoomAPI(defaultRoom, port, w, r, "/api/send")
+			return
 		case "/new-room":
 			serveNewRoom(rm)(w, r)
 			return
@@ -1075,7 +1165,7 @@ func route(rm *RoomManager, defaultRoom *Room, port string) http.HandlerFunc {
 		// Default room API
 		if path == "/ws" || path == "/upload" || path == "/clear" ||
 			path == "/set-interval" || path == "/toggle-pause" ||
-			path == "/api/version" || path == "/api/messages" || path == "/qr" || strings.HasPrefix(path, "/file/") {
+			path == "/api/version" || path == "/api/messages" || path == "/api/send" || path == "/qr" || strings.HasPrefix(path, "/file/") {
 			serveRoomAPI(defaultRoom, port, w, r, path)
 			return
 		}

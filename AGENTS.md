@@ -140,6 +140,7 @@ The backend lives entirely in `main.go`.
 | `/qr` | GET | PNG QR code pointing to the server's root URL |
 | `/api/version` | GET | Plain-text version string |
 | `/api/messages` | GET | Returns all text messages and file download URLs in the default room as JSON |
+| `/api/send` | POST | Sends text (JSON `{"text":"..."}`) or uploads a file (`multipart/form-data` with `file`) to the default room |
 | `/new-room` | POST | Creates a new isolated room with a UUID path and returns `{ "roomUrl": "/r/{uuid}" }` |
 | `/clear` | POST | Clears default-room messages/files |
 | `/set-interval` | POST | Sets default-room auto-clear interval (`{ "interval": N }`) |
@@ -153,6 +154,7 @@ The backend lives entirely in `main.go`.
 | `/r/{roomID}/set-interval` | POST | Sets that room's auto-clear interval |
 | `/r/{roomID}/toggle-pause` | POST | Pauses or resumes that room's auto-clear timer |
 | `/r/{roomID}/api/messages` | GET | Returns all text messages and file download URLs in that room as JSON |
+| `/r/{roomID}/api/send` | POST | Sends text or uploads a file to that room; creates the room automatically if it does not exist |
 
 Example `curl` usage for a room:
 
@@ -203,7 +205,7 @@ This is important behind reverse proxies or Docker, where NAT would otherwise ma
 - Single-page vanilla JS in `web/script.js`.
 - Auto-reconnects on WebSocket close with a 2-second retry.
 - Filters echoed own messages using an `ownMessageIds` Set keyed by message ID.
-- Multi-file attachment via `<input type="file" multiple>`; selected files render as chips below the textarea.
+- Multi-file attachment via `<input type="file" multiple>`, drag-and-drop, and Ctrl+V paste (images and files from the clipboard); selected files render as chips below the textarea.
 - `dir="auto"` on message text and textarea for automatic RTL/LTR handling.
 - Room-aware API URLs: the frontend computes `apiBase` from the path (`/r/{roomID}` or empty for the default room) and uses it for WebSocket, upload, file download, clear, interval, pause, and QR endpoints.
 - Displays the current room name when visiting `/r/{roomID}`.

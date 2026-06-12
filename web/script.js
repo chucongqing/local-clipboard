@@ -545,11 +545,38 @@ function addFilesFromFileList(fileList) {
   messageInput.focus();
 }
 
+function handlePaste(e) {
+  const data = e.clipboardData || window.clipboardData;
+  if (!data) return;
+
+  const pastedFiles = [];
+  if (data.items) {
+    for (const item of data.items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile();
+        if (file) pastedFiles.push(file);
+      }
+    }
+  }
+  if (pastedFiles.length === 0 && data.files && data.files.length > 0) {
+    for (const file of data.files) {
+      pastedFiles.push(file);
+    }
+  }
+
+  if (pastedFiles.length === 0) return;
+
+  e.preventDefault();
+  addFilesFromFileList(pastedFiles);
+}
+
 fileInput.addEventListener('change', e => {
   addFilesFromFileList(e.target.files);
   // Reset input so selecting the same file again still fires change
   fileInput.value = '';
 });
+
+window.addEventListener('paste', handlePaste);
 
 sendButton.addEventListener('click', sendMessage);
 
