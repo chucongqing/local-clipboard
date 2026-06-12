@@ -122,7 +122,7 @@ The backend lives entirely in `main.go`.
 - **Hub** — per-room WebSocket manager running in its own goroutine. It owns:
   - `clients map[*websocket.Conn]string` (connection → resolved client IP).
   - `broadcast`, `register`, `unregister` channels.
-  - Auto-clear control channels: `clearNowCh`, `setIntervalCh`, `togglePauseCh`.
+  - Auto-clear control channels: `clearNowCh`, `setIntervalCh`, `togglePauseCh`, `resetTimerCh`.
   - `ClearConfig` (interval in minutes, paused flag, next clear time).
 - **FileStore** — per-room in-memory map of file ID → `FileData` (metadata only), protected by `sync.RWMutex`. File content is streamed to a room-specific temporary disk directory and cleared on cleanup.
 - **MessageStore** — per-room in-memory append-only list of text/file `Message`s, protected by `sync.RWMutex`. It lets newly connected clients catch up on the current session history; it is cleared alongside files on `/clear` and auto-clear.
@@ -183,6 +183,7 @@ Rooms are fully isolated: a message or file uploaded to `/r/room-a` is never vis
 - A `nil` timer channel disables the timer without an extra flag.
 - On timer fire or manual clear, the Hub clears both `FileStore` and `MessageStore`, then broadcasts `type: "clear"` to all clients in that room.
 - On interval/pause changes, it broadcasts `type: "config"` with the new state.
+- Sending a text message or file resets the auto-clear countdown for that room (only when the timer is running, not while paused).
 - Newly connected clients receive the current room's config and message history immediately.
 - Each room's timer is independent; clearing one room does not affect others.
 

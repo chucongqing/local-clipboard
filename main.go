@@ -198,6 +198,7 @@ type Hub struct {
 	clearNowCh    chan struct{}
 	setIntervalCh chan int
 	togglePauseCh chan struct{}
+	resetTimerCh  chan struct{}
 	clearConfig   ClearConfig
 	stopCh        chan struct{}
 }
@@ -213,6 +214,7 @@ func newHub(fileStore *FileStore, messageStore *MessageStore) *Hub {
 		clearNowCh:    make(chan struct{}, 1),
 		setIntervalCh: make(chan int, 1),
 		togglePauseCh: make(chan struct{}, 1),
+		resetTimerCh:  make(chan struct{}, 1),
 		clearConfig:   ClearConfig{IntervalMin: 10},
 		stopCh:        make(chan struct{}),
 	}
@@ -352,6 +354,15 @@ func (h *Hub) deviceCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return uniqueDeviceCount(h.clients)
+}
+
+// resetTimer signals the hub to restart the auto-clear countdown from now.
+// It is a no-op if the channel is already buffered, so callers can fire-and-forget.
+func (h *Hub) resetTimer() {
+	select {
+	case h.resetTimerCh <- struct{}{}:
+	default:
+	}
 }
 
 // stop signals the hub run loop to exit and closes all client connections.
@@ -567,6 +578,19 @@ func (h *Hub) run() {
 				NextClearTime: next,
 			}})
 
+		case <-h.resetTimerCh:
+			if h.clearConfig.IntervalMin > 0 && !h.clearConfig.Paused {
+				next := time.Now().Add(time.Duration(h.clearConfig.IntervalMin) * time.Minute)
+				h.clearConfig.NextClearTime = next
+				timerChan = time.After(time.Duration(h.clearConfig.IntervalMin) * time.Minute)
+				log.Printf("Auto-clear timer reset (%d min)", h.clearConfig.IntervalMin)
+				h.broadcastToAll(Message{Type: "config", Config: &ClearConfig{
+					IntervalMin:   h.clearConfig.IntervalMin,
+					Paused:        false,
+					NextClearTime: next,
+				}})
+			}
+
 		case <-h.stopCh:
 			return
 		}
@@ -603,6 +627,7 @@ func (h *Hub) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				msg.ID = fmt.Sprintf("%d", time.Now().UnixNano())
 			}
 			h.broadcast <- broadcastMsg{msg: msg, sender: conn}
+			h.resetTimer()
 		}
 	}
 }
@@ -955,6 +980,7 @@ func (room *Room) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	// Persist and broadcast to connected WebSocket clients.
 	room.hub.broadcast <- broadcastMsg{msg: msg, sender: nil}
+	room.hub.resetTimer()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(msg)
