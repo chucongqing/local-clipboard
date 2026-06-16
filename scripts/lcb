@@ -44,6 +44,7 @@ Usage: ${LCB_CMD} <command> [args]
 
 Commands:
   help                            Show this help
+  env                             Show current environment configuration
   set-env [HOST] [ROOM] [SCHEME]  Configure server/room (empty args use defaults)
   send-text "MESSAGE"             Send a text message
   send-file /path/to/file         Upload a file
@@ -84,6 +85,9 @@ lcb() {
         help|-h|--help)
             _lcb_usage
             ;;
+        env)
+            _lcb_env
+            ;;
         set-env|set_env)
             _lcb_set_env "$@"
             ;;
@@ -117,6 +121,13 @@ lcb() {
             return 1
             ;;
     esac
+}
+
+_lcb_env() {
+    echo "LOCAL_CLIPBOARD_HOST=${LOCAL_CLIPBOARD_HOST}"
+    echo "LOCAL_CLIPBOARD_ROOM=${LOCAL_CLIPBOARD_ROOM:-(empty -> default room)}"
+    echo "LOCAL_CLIPBOARD_SCHEME=${LOCAL_CLIPBOARD_SCHEME}"
+    echo "Base URL: $(_lcb_base_url)"
 }
 
 _lcb_set_env() {

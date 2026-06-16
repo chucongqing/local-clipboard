@@ -157,6 +157,9 @@ eval "$(lcb set-env 192.168.1.100:8080 my-room http)"
 ```bash
 lcb help
 
+# Show current environment configuration
+lcb env
+
 # Configure target server and room
 lcb set-env 192.168.1.100:8080 my-room http
 
