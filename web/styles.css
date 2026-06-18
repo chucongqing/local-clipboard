@@ -102,20 +102,20 @@ h1 {
   vertical-align: middle;
 }
 
-.status {
-  text-align: center;
-  padding: 10px;
-  border-radius: 10px;
-  font-size: 0.9em;
+.qr-status {
+  font-size: 0.85em;
   font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 8px;
+  white-space: nowrap;
 }
 
-.status.connected {
+.qr-status.connected {
   background: #d4edda;
   color: #155724;
 }
 
-.status.disconnected {
+.qr-status.disconnected {
   background: #f8d7da;
   color: #721c24;
 }
@@ -161,9 +161,27 @@ h1 {
 }
 
 .message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
   font-size: 0.75em;
   font-weight: 600;
   opacity: 0.7;
+}
+
+.message-sender {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.message-time {
+  font-weight: 400;
+  opacity: 0.75;
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
 }
 
 .message-text {
@@ -868,28 +886,26 @@ h1 {
   transform: translateY(0);
 }
 
-.qr-container {
+.qr-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(4px);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 18px;
   padding: 20px;
-  border-radius: 12px;
-  overflow: hidden;
-  max-height: 400px;
-  opacity: 1;
-  transition:
-    max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 0.3s ease,
-    padding 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  gap: 16px;
+  animation: fadeIn 0.2s ease-out;
 }
 
-.qr-container.collapsed {
-  max-height: 0;
-  opacity: 0;
-  padding: 0 20px;
-  pointer-events: none;
+.qr-lightbox-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
 }
 
 .qr-image {
@@ -991,9 +1007,9 @@ h1 {
     font-size: 1.3em;
   }
 
-  .status {
-    font-size: 0.85em;
-    padding: 8px;
+  .qr-status {
+    font-size: 0.8em;
+    padding: 4px 8px;
   }
 
   .messages {

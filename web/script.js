@@ -1,7 +1,7 @@
 const messagesDiv = document.getElementById('messages');
 const messageInput = document.getElementById('messageInput');
 const sendButton = document.getElementById('sendButton');
-const statusDiv = document.getElementById('status');
+const connectionStatusSpan = document.getElementById('connectionStatus');
 const fileInput = document.getElementById('fileInput');
 const fileAttachmentsDiv = document.getElementById('fileAttachments');
 const intervalSelect = document.getElementById('intervalSelect');
@@ -13,6 +13,9 @@ const imageLightbox = document.getElementById('imageLightbox');
 const lightboxImage = document.getElementById('lightboxImage');
 const lightboxClose = document.getElementById('lightboxClose');
 const lightboxDownload = document.getElementById('lightboxDownload');
+const qrLightbox = document.getElementById('qrLightbox');
+const qrLightboxClose = document.getElementById('qrLightboxClose');
+const qrLightboxImage = document.getElementById('qrLightboxImage');
 const newRoomBtn = document.getElementById('newRoomBtn');
 const copyRoomUrlBtn = document.getElementById('copyRoomUrlBtn');
 
@@ -36,8 +39,8 @@ function connect() {
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    statusDiv.textContent = 'Connected ✅';
-    statusDiv.className = 'status connected';
+    connectionStatusSpan.textContent = 'Connected ✅';
+    connectionStatusSpan.className = 'qr-status connected';
     messageInput.disabled = false;
     fileInput.disabled = false;
     updateSendButton();
@@ -45,8 +48,8 @@ function connect() {
   };
 
   ws.onclose = () => {
-    statusDiv.textContent = 'Disconnected. Reconnecting...';
-    statusDiv.className = 'status disconnected';
+    connectionStatusSpan.textContent = 'Disconnected';
+    connectionStatusSpan.className = 'qr-status disconnected';
     messageInput.disabled = true;
     sendButton.disabled = true;
     fileInput.disabled = true;
@@ -55,8 +58,8 @@ function connect() {
 
   ws.onerror = error => {
     console.error('WebSocket error:', error);
-    statusDiv.textContent = 'Connection error';
-    statusDiv.className = 'status disconnected';
+    connectionStatusSpan.textContent = 'Error';
+    connectionStatusSpan.className = 'qr-status disconnected';
   };
 
   ws.onmessage = event => {
@@ -75,7 +78,7 @@ function connect() {
     }
     if (data.type === 'clients') {
       connectedCount = data.count;
-      statusDiv.textContent = `Connected ✅ · ${connectedCount} device${connectedCount !== 1 ? 's' : ''}`;
+      connectionStatusSpan.textContent = `Connected ✅ · ${connectedCount} device${connectedCount !== 1 ? 's' : ''}`;
       return;
     }
     if (data.type === 'history') {
@@ -144,15 +147,26 @@ function addMessage(text, file, isOwn, messageId, senderIp, senderName) {
 
   const headerDiv = document.createElement('div');
   headerDiv.className = 'message-header';
+
+  const senderSpan = document.createElement('span');
+  senderSpan.className = 'message-sender';
   if (senderName && senderIp) {
-    headerDiv.textContent = `${senderName}@${senderIp}`;
+    senderSpan.textContent = `${senderName}@${senderIp}`;
   } else if (senderName) {
-    headerDiv.textContent = senderName;
+    senderSpan.textContent = senderName;
   } else if (isOwn) {
-    headerDiv.textContent = 'You';
+    senderSpan.textContent = 'You';
   } else {
-    headerDiv.textContent = senderIp || 'Unknown';
+    senderSpan.textContent = senderIp || 'Unknown';
   }
+  headerDiv.appendChild(senderSpan);
+
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'message-time';
+  const now = new Date();
+  timeSpan.textContent = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  headerDiv.appendChild(timeSpan);
+
   messageDiv.appendChild(headerDiv);
 
   if (text) {
@@ -208,10 +222,17 @@ function addMessage(text, file, isOwn, messageId, senderIp, senderName) {
       downloadBtn.onclick = () => downloadFile(fileId, file.name);
       actionsDiv.appendChild(downloadBtn);
 
+      const isImg = isImageFile(file);
       const copyUrlBtn = document.createElement('button');
       copyUrlBtn.className = 'action-btn copy-url-btn';
-      copyUrlBtn.textContent = 'Copy URL';
-      copyUrlBtn.onclick = () => copyFileUrl(fileId, copyUrlBtn);
+      copyUrlBtn.textContent = isImg ? 'Copy Image' : 'Copy URL';
+      copyUrlBtn.onclick = () => {
+        if (isImg) {
+          copyImageToClipboard(fileId, copyUrlBtn);
+        } else {
+          copyFileUrl(fileId, copyUrlBtn);
+        }
+      };
       actionsDiv.appendChild(copyUrlBtn);
     }
 
@@ -356,6 +377,34 @@ function copyFileUrl(fileId, button) {
       });
   } else {
     fallbackCopy(url, onSuccess);
+  }
+}
+
+async function copyImageToClipboard(fileId, button) {
+  function onSuccess() {
+    button.classList.add('copied');
+    button.textContent = 'Copied';
+    setTimeout(() => {
+      button.classList.remove('copied');
+      button.textContent = 'Copy Image';
+    }, 2000);
+  }
+
+  try {
+    const url = `${apiBase}/file/${fileId}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error('Failed to fetch image');
+    }
+    const blob = await response.blob();
+    const type = blob.type || 'image/png';
+    const item = new ClipboardItem({ [type]: blob });
+    await navigator.clipboard.write([item]);
+    onSuccess();
+  } catch (err) {
+    console.error('Copy image failed:', err);
+    // Fallback: try copying the URL as text
+    copyFileUrl(fileId, button);
   }
 }
 
@@ -922,29 +971,53 @@ document.getElementById('dismissUpdate')?.addEventListener('click', dismissUpdat
 
 // QR code toggle functionality
 const qrToggle = document.getElementById('qrToggle');
-const qrContainer = document.getElementById('qrContainer');
 const qrSection = document.getElementById('qrSection');
-const qrImage = document.getElementById('qrImage');
 
-if (roomPath && qrImage) {
-  qrImage.src = `${apiBase}/qr`;
+function openQRLightbox() {
+  if (!qrLightbox || !qrLightboxImage) return;
+  qrLightboxImage.src = `${apiBase}/qr`;
+  qrLightbox.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeQRLightbox() {
+  if (!qrLightbox) return;
+  qrLightbox.style.display = 'none';
+  document.body.style.overflow = '';
 }
 
 // Hide QR section on mobile devices
 if (isMobile()) {
   qrSection.style.display = 'none';
 } else {
-  qrToggle.addEventListener('click', () => {
-    const isCollapsed = qrContainer.classList.contains('collapsed');
-    if (isCollapsed) {
-      qrContainer.classList.remove('collapsed');
-      qrToggle.textContent = 'Hide QR Code';
-    } else {
-      qrContainer.classList.add('collapsed');
-      qrToggle.textContent = 'Show QR Code';
+  qrToggle.addEventListener('click', openQRLightbox);
+}
+
+// QR lightbox close events
+if (qrLightboxClose) {
+  qrLightboxClose.addEventListener('click', closeQRLightbox);
+}
+if (qrLightbox) {
+  qrLightbox.addEventListener('click', e => {
+    if (e.target === qrLightbox) {
+      closeQRLightbox();
     }
   });
 }
+
+// Close QR lightbox on Escape (handle together with image lightbox)
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (qrLightbox && qrLightbox.style.display === 'flex') {
+      closeQRLightbox();
+      return;
+    }
+    if (imageLightbox && imageLightbox.style.display === 'flex') {
+      closeImageLightbox();
+      return;
+    }
+  }
+});
 
 intervalSelect.addEventListener('change', () => {
   fetch(`${apiBase}/set-interval`, {
@@ -1031,11 +1104,6 @@ if (imageLightbox) {
     }
   });
 }
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && imageLightbox && imageLightbox.style.display === 'flex') {
-    closeImageLightbox();
-  }
-});
 
 // Drag and drop file upload
 let dragCounter = 0;
