@@ -123,6 +123,95 @@ func (fs *FileStore) clear() {
 	fs.files = make(map[string]*FileData)
 }
 
+const copyBufferSize = 1 << 20 // 1 MiB
+
+// copyBufferPool holds reusable 1 MiB buffers for streaming file uploads.
+// Using a pool avoids allocating a large buffer per request.
+var copyBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, copyBufferSize)
+	},
+}
+
+// maxBytesReader wraps an io.Reader and enforces a byte limit. It is used
+// instead of http.MaxBytesReader because we stream directly from a multipart
+// part rather than from r.Body.
+type maxBytesReader struct {
+	r     io.Reader
+	limit int64
+	read  int64
+}
+
+func (m *maxBytesReader) Read(p []byte) (int, error) {
+	if m.read >= m.limit {
+		return 0, &http.MaxBytesError{Limit: m.limit}
+	}
+	remaining := m.limit - m.read
+	if int64(len(p)) > remaining {
+		p = p[:remaining]
+	}
+	n, err := m.r.Read(p)
+	m.read += int64(n)
+	return n, err
+}
+
+// receiveUploadStream reads the "file" part from a multipart request directly
+// into the room's temp directory. It avoids r.FormFile, which would create an
+// intermediate temp file for large uploads. On success the file metadata is
+// stored in the room's FileStore and returned.
+func (room *Room) receiveUploadStream(r *http.Request) (*FileData, error) {
+	mr, err := r.MultipartReader()
+	if err != nil {
+		return nil, err
+	}
+
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if part.FormName() != "file" {
+			part.Close()
+			continue
+		}
+
+		fileID := fmt.Sprintf("%d", time.Now().UnixNano())
+		tempPath := room.fileStore.filePath(fileID)
+
+		dst, err := os.Create(tempPath)
+		if err != nil {
+			part.Close()
+			return nil, err
+		}
+
+		limited := &maxBytesReader{r: part, limit: room.maxFileSize}
+		buf := copyBufferPool.Get().([]byte)
+		written, err := io.CopyBuffer(dst, limited, buf)
+		copyBufferPool.Put(buf)
+		dst.Close()
+		part.Close()
+
+		if err != nil {
+			os.Remove(tempPath)
+			return nil, err
+		}
+
+		fileData := &FileData{
+			ID:   fileID,
+			Name: part.FileName(),
+			Size: written,
+			Type: part.Header.Get("Content-Type"),
+		}
+		room.fileStore.set(fileID, fileData)
+		return fileData, nil
+	}
+
+	return nil, errors.New("file part not found")
+}
+
 // MessageStore keeps a history of text/file messages so late-joining clients
 // can catch up. It only stores metadata; file content lives on disk.
 type MessageStore struct {
@@ -749,10 +838,7 @@ func (room *Room) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Limit upload size and stream the body to disk instead of loading it into memory.
-	r.Body = http.MaxBytesReader(w, r.Body, room.maxFileSize)
-
-	file, header, err := r.FormFile("file")
+	fileData, err := room.receiveUploadStream(r)
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
@@ -762,37 +848,12 @@ func (room *Room) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error reading file", http.StatusBadRequest)
 		return
 	}
-	defer file.Close()
 
-	fileID := fmt.Sprintf("%d", time.Now().UnixNano())
-	tempPath := room.fileStore.filePath(fileID)
-
-	dst, err := os.Create(tempPath)
-	if err != nil {
-		http.Error(w, "Error creating temp file", http.StatusInternalServerError)
-		return
-	}
-
-	written, err := io.Copy(dst, file)
-	dst.Close()
-	if err != nil {
-		os.Remove(tempPath)
-		http.Error(w, "Error saving file", http.StatusInternalServerError)
-		return
-	}
-
-	fileData := &FileData{
-		ID:   fileID,
-		Name: header.Filename,
-		Size: written,
-		Type: header.Header.Get("Content-Type"),
-	}
-	room.fileStore.set(fileID, fileData)
-	log.Printf("Room %s: file uploaded: ID=%s, Name=%s, Size=%d", room.id, fileID, fileData.Name, fileData.Size)
+	log.Printf("Room %s: file uploaded: ID=%s, Name=%s, Size=%d", room.id, fileData.ID, fileData.Name, fileData.Size)
 
 	// Return file ID
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"id":"%s","name":"%s","size":%d,"type":"%s"}`, fileID, fileData.Name, fileData.Size, fileData.Type)
+	fmt.Fprintf(w, `{"id":"%s","name":"%s","size":%d,"type":"%s"}`, fileData.ID, fileData.Name, fileData.Size, fileData.Type)
 }
 
 func (room *Room) handleFileDownload(w http.ResponseWriter, r *http.Request, fileID string) {
@@ -921,10 +982,7 @@ func (room *Room) handleSend(w http.ResponseWriter, r *http.Request) {
 	hasFile := strings.HasPrefix(contentType, "multipart/form-data")
 
 	if hasFile {
-		// Limit upload size and stream the body to disk.
-		r.Body = http.MaxBytesReader(w, r.Body, room.maxFileSize)
-
-		file, header, err := r.FormFile("file")
+		fileData, err := room.receiveUploadStream(r)
 		if err != nil {
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
@@ -934,35 +992,9 @@ func (room *Room) handleSend(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Error reading file", http.StatusBadRequest)
 			return
 		}
-		defer file.Close()
-
-		fileID := fmt.Sprintf("%d", time.Now().UnixNano())
-		tempPath := room.fileStore.filePath(fileID)
-
-		dst, err := os.Create(tempPath)
-		if err != nil {
-			http.Error(w, "Error creating temp file", http.StatusInternalServerError)
-			return
-		}
-
-		written, err := io.Copy(dst, file)
-		dst.Close()
-		if err != nil {
-			os.Remove(tempPath)
-			http.Error(w, "Error saving file", http.StatusInternalServerError)
-			return
-		}
-
-		fileData := &FileData{
-			ID:   fileID,
-			Name: header.Filename,
-			Size: written,
-			Type: header.Header.Get("Content-Type"),
-		}
-		room.fileStore.set(fileID, fileData)
 
 		msg.File = fileData
-		msg.ID = fileID
+		msg.ID = fileData.ID
 	} else {
 		var req struct {
 			Text string `json:"text"`
